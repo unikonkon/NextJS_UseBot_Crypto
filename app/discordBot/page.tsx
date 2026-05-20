@@ -998,6 +998,112 @@ function mergeKlines(prev: KlineData[], fresh: KlineData[]): KlineData[] {
   return Array.from(map.values()).sort((a, b) => a.openTime - b.openTime);
 }
 
+// Convert persisted trade history → synthetic BacktestResult so KlineGraph
+// can draw BUY/SELL markers from real Discord-sent trades (not from a backtest).
+// Only `trades`, `totalPnlPct`, and `totalTrades` are read by KlineGraph.
+function tradeHistoryToBacktestResult(
+  history: TradeRecord[],
+  klines: KlineData[],
+): BacktestResult | null {
+  if (history.length === 0 || klines.length === 0) return null;
+
+  const indexByOpenTime = new Map<number, number>();
+  klines.forEach((k, i) => indexByOpenTime.set(k.openTime, i));
+
+  // Sort ascending by time, then pair BUY → SELL.
+  const sorted = [...history].sort((a, b) => a.time - b.time);
+  const trades: Trade[] = [];
+  let openBuy: TradeRecord | null = null;
+
+  for (const rec of sorted) {
+    if (rec.action === "BUY") {
+      // If a previous BUY had no matching SELL, surface it as an open position marker
+      if (openBuy) {
+        const entryIdx = indexByOpenTime.get(openBuy.barOpenTime);
+        if (entryIdx != null) {
+          trades.push({
+            entryIdx,
+            entryTime: openBuy.barOpenTime,
+            entryPrice: openBuy.price,
+            exitIdx: -1,
+            exitTime: 0,
+            exitPrice: 0,
+            pnl: 0,
+            pnlPct: 0,
+            bars: 0,
+            reason: "Open position (no SELL yet)",
+          });
+        }
+      }
+      openBuy = rec;
+    } else if (rec.action === "SELL" && openBuy) {
+      const entryIdx = indexByOpenTime.get(openBuy.barOpenTime);
+      const exitIdx = indexByOpenTime.get(rec.barOpenTime);
+      const pnlPct = rec.pnlPct ?? ((rec.price - openBuy.price) / openBuy.price) * 100;
+      // Only add if at least the exit bar is in the loaded window
+      if (exitIdx != null) {
+        trades.push({
+          entryIdx: entryIdx ?? -1,
+          entryTime: openBuy.barOpenTime,
+          entryPrice: openBuy.price,
+          exitIdx,
+          exitTime: rec.barOpenTime,
+          exitPrice: rec.price,
+          pnl: rec.price - openBuy.price,
+          pnlPct,
+          bars: entryIdx != null ? exitIdx - entryIdx : 0,
+          reason: rec.strategyName,
+        });
+      }
+      openBuy = null;
+    }
+  }
+
+  // Trailing unmatched BUY
+  if (openBuy) {
+    const entryIdx = indexByOpenTime.get(openBuy.barOpenTime);
+    if (entryIdx != null) {
+      trades.push({
+        entryIdx,
+        entryTime: openBuy.barOpenTime,
+        entryPrice: openBuy.price,
+        exitIdx: -1,
+        exitTime: 0,
+        exitPrice: 0,
+        pnl: 0,
+        pnlPct: 0,
+        bars: 0,
+        reason: "Open position (no SELL yet)",
+      });
+    }
+  }
+
+  const closed = trades.filter(t => t.exitIdx >= 0);
+  const totalPnlPct = closed.reduce((s, t) => s + t.pnlPct, 0);
+  const wins = closed.filter(t => t.pnlPct > 0).length;
+  const losses = closed.filter(t => t.pnlPct < 0).length;
+
+  return {
+    trades,
+    totalPnlPct,
+    winRate: closed.length > 0 ? (wins / closed.length) * 100 : 0,
+    wins,
+    losses,
+    totalTrades: closed.length,
+    maxDrawdownPct: 0,
+    sharpeRatio: 0,
+    profitFactor: 0,
+    avgWinPct: 0,
+    avgLossPct: 0,
+    avgBarsHeld: 0,
+    bestTradePct: 0,
+    worstTradePct: 0,
+    equityCurve: [],
+    signals: [],
+    buyAndHoldPct: 0,
+  };
+}
+
 // ═══════════════════════════════════════════════════════════════
 // Sub-components
 // ═══════════════════════════════════════════════════════════════
@@ -1691,6 +1797,13 @@ function WatcherRowImpl({
     [expanded, histKlines]
   );
 
+  // Live chart markers come from the watcher's persisted trade history,
+  // NOT from backtest. Backtest results only appear on the historical chart.
+  const liveTradeMarkers = useMemo<BacktestResult | null>(() =>
+    showLiveChart ? tradeHistoryToBacktestResult(tradeHistory, klines) : null,
+    [showLiveChart, tradeHistory, klines]
+  );
+
   // ─── Load trade history from IndexedDB ────────────────────
   useEffect(() => {
     let cancelled = false;
@@ -2032,12 +2145,17 @@ function WatcherRowImpl({
               ยังไม่มีข้อมูล — กด ▶ เริ่ม เพื่อดึงข้อมูล หรือเปิด &quot;ดูกราฟจากการดึงข้อมูล&quot; ในแผงแก้ไข
             </p>
           ) : (
-            <KlineGraph
-              klines={klines}
-              indicators={liveIndicators}
-              btResult={btResult}
-              strategyId={config.strategyId}
-            />
+            <>
+              <p className="text-[10px] text-muted-foreground">
+                Markers: ประวัติการซื้อขายของ Watcher นี้ ({tradeHistory.length} รายการใน history)
+              </p>
+              <KlineGraph
+                klines={klines}
+                indicators={liveIndicators}
+                btResult={liveTradeMarkers}
+                strategyId={config.strategyId}
+              />
+            </>
           )}
         </div>
       )}
