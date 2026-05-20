@@ -62,7 +62,7 @@ const POLL_OPTIONS: { value: number; label: string }[] = [
   { value: 86400, label: "1 วัน" },
 ];
 
-const WEBHOOK_STORAGE_KEY = "discordBot.webhookUrl";
+const WATCHERS_STORAGE_KEY = "discordBot.watchers";
 
 // ─── Formatting ────────────────────────────────────────────────
 function fmtNum(val: string | number, dec = 2): string {
@@ -166,6 +166,47 @@ function EquityChart({ curve, trades }: { curve: number[]; trades: Trade[] }) {
   );
 }
 
+// ─── Watcher Config (per-symbol polling) ──────────────────────
+interface WatcherConfig {
+  id: string;
+  symbol: string;
+  customSymbol: string;
+  interval: Interval;
+  strategyId: StrategyId;
+  strategyParams: Record<string, number>;
+  pollSeconds: number;
+  webhookUrl: string;
+  useEnvWebhook: boolean;
+  alertsEnabled: boolean;
+  klineLimit: number;
+}
+
+function makeNewWatcher(seed?: Partial<WatcherConfig>): WatcherConfig {
+  const rsi = STRATEGIES.find(s => s.id === "rsi")!;
+  return {
+    id: `w-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+    symbol: "BTCUSDT",
+    customSymbol: "",
+    interval: "1h",
+    strategyId: "rsi",
+    strategyParams: { ...rsi.params },
+    pollSeconds: 60,
+    webhookUrl: "",
+    useEnvWebhook: false,
+    alertsEnabled: true,
+    klineLimit: 200,
+    ...seed,
+  };
+}
+
+// Binance request weight by limit (per /api/v3/klines docs)
+function binanceKlineWeight(limit: number): number {
+  if (limit <= 100) return 1;
+  if (limit <= 500) return 2;
+  if (limit <= 1000) return 5;
+  return 10;
+}
+
 // ─── Discord Alert Entry ───────────────────────────────────────
 interface DiscordAlert {
   id: string;
@@ -215,69 +256,40 @@ export default function DiscordBotPage() {
   const [allBtRunning, setAllBtRunning] = useState(false);
   const [allBtExpanded, setAllBtExpanded] = useState<Set<StrategyId>>(new Set());
 
-  // ── Discord + Realtime state ──
-  const [webhookUrl, setWebhookUrl] = useState("");
-  const [useEnvWebhook, setUseEnvWebhook] = useState(false);
-  const [alertsEnabled, setAlertsEnabled] = useState(true);
-  const [pollSeconds, setPollSeconds] = useState(30);
-  const [polling, setPolling] = useState(false);
-  const [lastPolledAt, setLastPolledAt] = useState<Date | null>(null);
-  const [tickSeconds, setTickSeconds] = useState(0);
+  // ── Discord global state ──
   const [alerts, setAlerts] = useState<DiscordAlert[]>([]);
-  const [testingWebhook, setTestingWebhook] = useState(false);
-  const lastAlertBarRef = useRef<number>(0);
-  const lastBuyRef = useRef<{ price: number; time: number } | null>(null);
-  const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const pollSecondsRef = useRef(pollSeconds);
-  const pollStateRef = useRef<{
-    symbol: string;
-    interval: Interval;
-    limit: string;
-    strategyId: StrategyId;
-    strategyParams: Record<string, number>;
-    feesPct: string;
-    webhookUrl: string;
-    alertsEnabled: boolean;
-  } | null>(null);
+
+  // ── Watchers (multi-symbol Discord alerts) ──
+  const [watchers, setWatchers] = useState<WatcherConfig[]>([]);
+  // Map<watcherId, isPolling> — child rows report up; used for rate-limit calc
+  const [pollingMap, setPollingMap] = useState<Record<string, boolean>>({});
 
   const activeSymbol = customSymbol.trim().toUpperCase() || symbol;
 
-  // ── Load webhook URL from localStorage on mount ──
-  useEffect(() => {
-    const saved = typeof window !== "undefined" ? localStorage.getItem(WEBHOOK_STORAGE_KEY) : null;
-    if (saved) setWebhookUrl(saved);
-  }, []);
-
-  // ── Persist webhook URL ──
+  // ── Load watchers from localStorage on mount ──
   useEffect(() => {
     if (typeof window === "undefined") return;
-    if (webhookUrl) localStorage.setItem(WEBHOOK_STORAGE_KEY, webhookUrl);
-    else localStorage.removeItem(WEBHOOK_STORAGE_KEY);
-  }, [webhookUrl]);
+    const saved = localStorage.getItem(WATCHERS_STORAGE_KEY);
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved) as WatcherConfig[];
+        if (Array.isArray(parsed)) setWatchers(parsed);
+      } catch { /* ignore corrupt JSON */ }
+    }
+  }, []);
+
+  // ── Persist watchers ──
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (watchers.length > 0) localStorage.setItem(WATCHERS_STORAGE_KEY, JSON.stringify(watchers));
+    else localStorage.removeItem(WATCHERS_STORAGE_KEY);
+  }, [watchers]);
 
   // ── Compute indicators when klines change ──
   useEffect(() => {
     if (klines.length >= 15) setIndicators(computeAll(klines));
     else setIndicators(null);
   }, [klines]);
-
-  // ── Track latest config in refs for the polling loop ──
-  useEffect(() => {
-    pollSecondsRef.current = pollSeconds;
-  }, [pollSeconds]);
-
-  useEffect(() => {
-    pollStateRef.current = {
-      symbol: activeSymbol,
-      interval,
-      limit,
-      strategyId,
-      strategyParams,
-      feesPct,
-      webhookUrl,
-      alertsEnabled,
-    };
-  }, [activeSymbol, interval, limit, strategyId, strategyParams, feesPct, webhookUrl, alertsEnabled]);
 
   // ─── Fetch one-shot realtime ───────────────────────────────
   const fetchRealtime = useCallback(async () => {
@@ -288,7 +300,6 @@ export default function DiscordBotPage() {
     setBtResult(null);
     setAllBtResults(null);
     setHistoricalProgress(null);
-    lastAlertBarRef.current = 0;
     try {
       const params = new URLSearchParams({ symbol: activeSymbol, interval, limit });
       const res = await fetch(`/api/klines?${params}`);
@@ -305,7 +316,6 @@ export default function DiscordBotPage() {
     if (!startTime) { setError("กรุณาระบุเวลาเริ่มต้น"); return; }
     setLoading(true); setError(null); setKlines([]); setIndicators(null); setBtResult(null); setAllBtResults(null);
     setHistoricalProgress({ current: 0 });
-    lastAlertBarRef.current = 0;
     const controller = new AbortController();
     abortRef.current = controller;
     try {
@@ -340,220 +350,41 @@ export default function DiscordBotPage() {
     }
   }, [activeSymbol, interval, startTime, endTime]);
 
-  // ─── Send Discord notification ─────────────────────────────
-  const sendDiscord = useCallback(async (payload: {
-    content?: string;
-    embeds?: unknown[];
-    username?: string;
-    webhookUrl?: string;
-  }): Promise<{ ok: boolean; message?: string }> => {
-    try {
-      const res = await fetch("/api/discord/notify", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        return { ok: false, message: data.error || `HTTP ${res.status}` };
-      }
-      return { ok: true };
-    } catch (err) {
-      return { ok: false, message: String(err) };
-    }
+  // ─── Append alert to global log (called by WatcherRow) ────
+  const appendAlert = useCallback((alert: DiscordAlert) => {
+    setAlerts(prev => [alert, ...prev].slice(0, 100));
   }, []);
 
-  // ─── Test webhook ──────────────────────────────────────────
-  const testWebhook = useCallback(async () => {
-    setTestingWebhook(true);
-    setError(null);
-    const result = await sendDiscord({
-      username: "Crypto Bot Test",
-      content: "🔔 ทดสอบ Discord Webhook สำเร็จ! ระบบพร้อมส่งสัญญาณซื้อขาย",
-      webhookUrl: useEnvWebhook ? undefined : webhookUrl,
+  // ─── Track per-watcher polling state from child rows ──────
+  const setWatcherPolling = useCallback((id: string, polling: boolean) => {
+    setPollingMap(prev => {
+      if (!!prev[id] === polling) return prev;
+      return { ...prev, [id]: polling };
     });
-    if (!result.ok) setError(`ทดสอบ Webhook ล้มเหลว: ${result.message}`);
-    else setError(null);
-    setTestingWebhook(false);
-  }, [sendDiscord, webhookUrl, useEnvWebhook]);
+  }, []);
 
-  // ─── Send signal alert to Discord ──────────────────────────
-  const sendSignalAlert = useCallback(async (params: {
-    action: "BUY" | "SELL";
-    bar: KlineData;
-    strategyName: string;
-    sym: string;
-    intv: string;
-    hookUrl: string;
-  }) => {
-    const { action, bar, strategyName, sym, intv, hookUrl } = params;
-    const price = +bar.close;
-    const isBuy = action === "BUY";
-    const emoji = isBuy ? "🟢" : "🔴";
+  // ─── Watcher CRUD ──────────────────────────────────────────
+  const addWatcher = useCallback(() => {
+    setWatchers(prev => [...prev, makeNewWatcher({
+      symbol: activeSymbol,
+      interval,
+      strategyId,
+      strategyParams: { ...strategyParams },
+      klineLimit: parseInt(limit, 10) || 200,
+    })]);
+  }, [activeSymbol, interval, strategyId, strategyParams, limit]);
 
-    // For SELL: pull previous BUY reference and compute P&L %
-    const prevBuy = !isBuy ? lastBuyRef.current : null;
-    const entryPrice = prevBuy?.price;
-    const entryTime = prevBuy?.time;
-    const pnlPct = entryPrice != null ? ((price - entryPrice) / entryPrice) * 100 : undefined;
+  const updateWatcher = useCallback((id: string, patch: Partial<WatcherConfig>) => {
+    setWatchers(prev => prev.map(w => w.id === id ? { ...w, ...patch } : w));
+  }, []);
 
-    // Embed color: BUY=green, SELL=amber if profit / red if loss / red if no ref
-    let color: number;
-    if (isBuy) color = 0x10b981;
-    else if (pnlPct != null && pnlPct >= 0) color = 0xf59e0b; // amber (profit)
-    else color = 0xef4444; // red (loss or no reference)
-
-    const fields: { name: string; value: string; inline?: boolean }[] = [
-      { name: "ราคา", value: fmtPrice(price), inline: true },
-      { name: "Open", value: fmtPrice(bar.open), inline: true },
-      { name: "High", value: fmtPrice(bar.high), inline: true },
-      { name: "Low", value: fmtPrice(bar.low), inline: true },
-      { name: "Volume", value: fmtNum(bar.volume), inline: true },
-      { name: "เวลาแท่ง", value: fmtFullDate(bar.openTime), inline: false },
-    ];
-
-    // For SELL: append BUY reference + P&L block
-    if (!isBuy) {
-      const pnlStr = pnlPct != null
-        ? `${pnlPct >= 0 ? "+" : ""}${pnlPct.toFixed(2)}%`
-        : "-";
-      const pnlEmoji = pnlPct == null ? "⚪" : pnlPct >= 0 ? "🟢" : "🔴";
-      fields.push(
-        { name: "─── อ้างอิงราคา BUY ก่อนหน้า ───", value: "​", inline: false },
-        { name: "🟢 ราคา BUY", value: entryPrice != null ? fmtPrice(entryPrice) : "-", inline: true },
-        { name: "🕒 เวลา BUY", value: entryTime != null ? fmtFullDate(entryTime) : "-", inline: true },
-        { name: `${pnlEmoji} กำไร/ขาดทุน`, value: pnlStr, inline: true },
-      );
-    }
-
-    const result = await sendDiscord({
-      username: "Crypto Signal Bot",
-      webhookUrl: useEnvWebhook ? undefined : hookUrl,
-      embeds: [{
-        title: `${emoji} ${action} Signal — ${sym}`,
-        description: `**กลยุทธ์:** ${strategyName}\n**Timeframe:** ${intv}`,
-        color,
-        fields,
-        timestamp: new Date().toISOString(),
-        footer: { text: `${sym} • ${intv} • Crypto Indicator Bot` },
-      }],
+  const removeWatcher = useCallback((id: string) => {
+    setWatchers(prev => prev.filter(w => w.id !== id));
+    setPollingMap(prev => {
+      const { [id]: _drop, ...rest } = prev;
+      return rest;
     });
-
-    // Update lastBuyRef: store on BUY, clear on SELL (one-shot pairing)
-    if (isBuy) {
-      lastBuyRef.current = { price, time: bar.openTime };
-    } else {
-      lastBuyRef.current = null;
-    }
-
-    const alert: DiscordAlert = {
-      id: `${bar.openTime}-${action}-${Date.now()}`,
-      time: Date.now(),
-      symbol: sym,
-      interval: intv,
-      strategyName,
-      action,
-      price,
-      barOpenTime: bar.openTime,
-      status: result.ok ? "ok" : "error",
-      message: result.message,
-      entryPrice,
-      entryTime,
-      pnlPct,
-    };
-    setAlerts(prev => [alert, ...prev].slice(0, 50));
-  }, [sendDiscord, useEnvWebhook]);
-
-  // ─── Polling tick ──────────────────────────────────────────
-  const pollTick = useCallback(async () => {
-    const state = pollStateRef.current;
-    if (!state) return;
-    try {
-      const params = new URLSearchParams({
-        symbol: state.symbol,
-        interval: state.interval,
-        limit: state.limit,
-      });
-      const res = await fetch(`/api/klines?${params}`);
-      if (!res.ok) {
-        const b = await res.json().catch(() => ({}));
-        throw new Error(b.error || `HTTP ${res.status}`);
-      }
-      const raw: BinanceKlineRaw[] = await res.json();
-      const fresh = raw.map(parseKline);
-
-      setKlines(prev => mergeKlines(prev, fresh));
-      setLastPolledAt(new Date());
-      setLastFetch(new Date());
-
-      // Use the freshly-fetched klines for signal detection (no race with React state)
-      if (state.alertsEnabled && fresh.length >= 50) {
-        const result = runBacktest(
-          fresh,
-          state.strategyId,
-          state.strategyParams,
-          parseFloat(state.feesPct) || 0.1,
-        );
-        // Use the last fully-closed bar (avoid forming bar)
-        const checkIdx = fresh.length - 2;
-        if (checkIdx >= 0) {
-          const sig = result.signals[checkIdx];
-          const bar = fresh[checkIdx];
-          if ((sig === "BUY" || sig === "SELL") && bar.openTime > lastAlertBarRef.current) {
-            lastAlertBarRef.current = bar.openTime;
-            const strat = STRATEGIES.find(s => s.id === state.strategyId);
-            sendSignalAlert({
-              action: sig,
-              bar,
-              strategyName: strat?.name ?? state.strategyId,
-              sym: state.symbol,
-              intv: state.interval,
-              hookUrl: state.webhookUrl,
-            });
-          }
-        }
-      }
-    } catch (err) {
-      setError(`Polling error: ${String(err)}`);
-    }
-  }, [sendSignalAlert]);
-
-  // ─── Polling loop driver ───────────────────────────────────
-  useEffect(() => {
-    if (!polling) {
-      if (pollTimerRef.current) {
-        clearTimeout(pollTimerRef.current);
-        pollTimerRef.current = null;
-      }
-      return;
-    }
-    let cancelled = false;
-    const runLoop = async () => {
-      await pollTick();
-      if (cancelled) return;
-      const delay = Math.max(3, pollSecondsRef.current) * 1000;
-      pollTimerRef.current = setTimeout(runLoop, delay);
-    };
-    runLoop();
-    return () => {
-      cancelled = true;
-      if (pollTimerRef.current) {
-        clearTimeout(pollTimerRef.current);
-        pollTimerRef.current = null;
-      }
-    };
-  }, [polling, pollTick]);
-
-  // ─── Tick counter (1s) — counts up while polling, resets on each poll ──
-  useEffect(() => {
-    if (!polling) {
-      setTickSeconds(0);
-      return;
-    }
-    setTickSeconds(0);
-    const id = window.setInterval(() => setTickSeconds(s => s + 1), 1000);
-    return () => window.clearInterval(id);
-  }, [polling, lastPolledAt]);
+  }, []);
 
   // ─── Run single Backtest ───────────────────────────────────
   const runBt = useCallback(() => {
@@ -591,25 +422,6 @@ export default function DiscordBotPage() {
     }, 10);
   }, [klines, feesPct]);
 
-  // ── Stop polling when key config changes that would confuse the loop ──
-  const togglePolling = useCallback(() => {
-    if (polling) {
-      setPolling(false);
-      return;
-    }
-    if (!useEnvWebhook && !webhookUrl.trim() && alertsEnabled) {
-      setError("กรุณาตั้ง Discord Webhook URL ก่อน หรือเปิดใช้ env webhook หรือปิด alert");
-      return;
-    }
-    setError(null);
-    // Reset alert dedupe to current latest bar so we don't blast historical alerts
-    if (klines.length > 0) {
-      lastAlertBarRef.current = klines[klines.length - 1].openTime;
-    }
-    // Clear previous BUY reference — new polling session starts fresh
-    lastBuyRef.current = null;
-    setPolling(true);
-  }, [polling, useEnvWebhook, webhookUrl, alertsEnabled, klines]);
 
   return (
     <div className="min-h-screen bg-background text-foreground">
@@ -632,11 +444,15 @@ export default function DiscordBotPage() {
           </div>
 
           <div className="flex items-center gap-2">
-            {polling && (
-              <Badge variant="outline" className="text-[10px] text-emerald-500 border-emerald-500/40 animate-pulse">
-                ● LIVE polling ทุก {pollSeconds}s
-              </Badge>
-            )}
+            {(() => {
+              const activeCount = Object.values(pollingMap).filter(Boolean).length;
+              if (activeCount === 0) return null;
+              return (
+                <Badge variant="outline" className="text-[10px] text-emerald-500 border-emerald-500/40 animate-pulse">
+                  ● LIVE {activeCount} watchers
+                </Badge>
+              );
+            })()}
             {lastFetch && (
               <Badge variant="outline" className="text-[10px] text-muted-foreground">
                 ล่าสุด: {lastFetch.toLocaleTimeString()}
@@ -649,6 +465,83 @@ export default function DiscordBotPage() {
           </div>
         </div>
         <Separator />
+
+        {/* ═══ DISCORD WATCHERS (MULTI-SYMBOL) ═══ */}
+        <Card size="sm" className="border-indigo-500/30">
+          <CardHeader>
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex items-center gap-3">
+                <StepBadge n={3} done={watchers.length > 0 && Object.values(pollingMap).some(Boolean)} />
+                <div>
+                  <CardTitle className="text-indigo-400">Discord Webhook + Real-time Alerts (Multi-Symbol)</CardTitle>
+                  <CardDescription>
+                    แต่ละคู่เหรียญรัน polling + ส่งแจ้งเตือนแยกกัน — เพิ่มได้หลายคู่ แต่ละคู่มี webhook URL ของตัวเอง
+                  </CardDescription>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <Badge
+                  variant="outline"
+                  className={Object.values(pollingMap).some(Boolean) ? "text-emerald-500 border-emerald-500/40 animate-pulse" : "text-muted-foreground"}
+                >
+                  {Object.values(pollingMap).filter(Boolean).length} / {watchers.length} active
+                </Badge>
+                <Button
+                  size="sm"
+                  className="bg-indigo-500 hover:bg-indigo-600 text-white"
+                  onClick={addWatcher}
+                >
+                  + เพิ่มคู่เหรียญ
+                </Button>
+              </div>
+            </div>
+          </CardHeader>
+
+          <CardContent className="space-y-4">
+            {/* Rate limit info */}
+            <RateLimitInfo watchers={watchers} pollingMap={pollingMap} />
+
+            {/* Watchers list */}
+            {watchers.length === 0 ? (
+              <div className="rounded-md border border-dashed border-border p-6 text-center space-y-2">
+                <p className="text-sm text-muted-foreground">ยังไม่มี Watcher</p>
+                <p className="text-[11px] text-muted-foreground">
+                  กดปุ่ม <span className="font-medium text-indigo-400">+ เพิ่มคู่เหรียญ</span> ด้านบนเพื่อสร้าง Watcher ตัวแรก
+                </p>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="border-indigo-500/30 text-indigo-400"
+                  onClick={addWatcher}
+                >
+                  + สร้าง Watcher แรก
+                </Button>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {watchers.map(w => (
+                  <WatcherRow
+                    key={w.id}
+                    config={w}
+                    onUpdate={(patch) => updateWatcher(w.id, patch)}
+                    onRemove={() => removeWatcher(w.id)}
+                    onPollingChange={(p) => setWatcherPolling(w.id, p)}
+                    onAlert={appendAlert}
+                  />
+                ))}
+              </div>
+            )}
+
+            <div className="rounded border border-amber-500/20 bg-amber-500/5 p-2 text-[10px] text-amber-500/80">
+              <p className="font-medium">วิธีทำงาน:</p>
+              <p>1. แต่ละ watcher poll /api/klines ของตัวเอง ทุก N วินาที (ช่วงเวลาตั้งได้แยก)</p>
+              <p>2. รัน Backtest engine บนข้อมูลของ watcher นั้น → ตรวจสัญญาณที่ &quot;แท่งปิดล่าสุด&quot;</p>
+              <p>3. ส่ง embed เข้า webhook URL ของ watcher นั้น (deduplicate ด้วย openTime) — SELL จะแนบราคา BUY ก่อนหน้า + P&amp;L%</p>
+            </div>
+
+            <DiscordHelpPanel />
+          </CardContent>
+        </Card>
 
         {/* ═══ CONFIG ═══ */}
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-[1fr_650px]">
@@ -715,7 +608,7 @@ export default function DiscordBotPage() {
                       </SelectContent>
                     </Select>
                   </Field>
-                  <Button onClick={fetchRealtime} disabled={loading || polling} className="h-9">
+                  <Button onClick={fetchRealtime} disabled={loading} className="h-9">
                     {loading ? "กำลังโหลด..." : "โหลดข้อมูล"}
                   </Button>
                 </div>
@@ -733,7 +626,7 @@ export default function DiscordBotPage() {
                   <Field label="สิ้นสุด">
                     <Input type="datetime-local" value={endTime} onChange={e => setEndTime(e.target.value)} className="w-44" />
                   </Field>
-                  <Button onClick={fetchHistorical} disabled={loading || polling} className="h-9">
+                  <Button onClick={fetchHistorical} disabled={loading} className="h-9">
                     {loading ? "กำลังดึง..." : "ดึงย้อนหลัง"}
                   </Button>
                   {loading && (
@@ -749,217 +642,6 @@ export default function DiscordBotPage() {
             </CardContent>
           </Card>
         </div>
-
-        {/* ═══ DISCORD + REALTIME CONFIG ═══ */}
-        <Card size="sm" className="border-indigo-500/30">
-          <CardHeader>
-            <div className="flex items-start justify-between gap-3">
-              <div className="flex items-center gap-3">
-                <StepBadge n={3} done={polling} />
-                <div>
-                  <CardTitle className="text-indigo-400">Discord Webhook + Real-time Alerts</CardTitle>
-                  <CardDescription>
-                    ตั้งค่า Webhook → เลือก Indicator → กดเริ่ม Realtime — ระบบจะแจ้งเตือน BUY/SELL เข้า Discord อัตโนมัติ
-                  </CardDescription>
-                </div>
-              </div>
-              <Badge
-                variant="outline"
-                className={polling ? "text-emerald-500 border-emerald-500/40 animate-pulse" : "text-muted-foreground"}
-              >
-                {polling ? "● กำลังทำงาน" : "○ ปิดอยู่"}
-              </Badge>
-            </div>
-          </CardHeader>
-
-          <CardContent className="space-y-4">
-
-            {/* ─── 3.1 Webhook Settings ──────────────────────────── */}
-            <div className="rounded-md border border-border/50 bg-muted/20 p-3 space-y-3">
-              <div className="flex items-center gap-2">
-                <StepBadge n={3.1 as number} done={useEnvWebhook || !!webhookUrl.trim()} />
-                <p className="text-[12px] font-semibold text-foreground/90">🔗 Webhook Settings</p>
-                <span className="text-[10px] text-muted-foreground">— ตั้งค่า Webhook URL ของ Discord channel</span>
-              </div>
-
-              <div className="grid grid-cols-1 md:grid-cols-[1fr_auto_auto] gap-2 items-end">
-                <Field label="Discord Webhook URL">
-                  <Input
-                    type="password"
-                    placeholder="https://discord.com/api/webhooks/..."
-                    value={webhookUrl}
-                    onChange={e => setWebhookUrl(e.target.value)}
-                    disabled={useEnvWebhook}
-                    autoComplete="off"
-                  />
-                </Field>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="h-9"
-                  onClick={testWebhook}
-                  disabled={testingWebhook || (!useEnvWebhook && !webhookUrl.trim())}
-                >
-                  {testingWebhook ? "กำลังทดสอบ..." : "ทดสอบ Webhook"}
-                </Button>
-                <Button
-                  variant={useEnvWebhook ? "default" : "outline"}
-                  size="sm"
-                  className="h-9"
-                  onClick={() => setUseEnvWebhook(v => !v)}
-                >
-                  {useEnvWebhook ? "● ใช้ env" : "○ ใช้ URL ด้านบน"}
-                </Button>
-              </div>
-
-              <p className="text-[10px] text-muted-foreground">
-                {useEnvWebhook
-                  ? "✓ ใช้ env DISCORD_WEBHOOK_URL จากฝั่งเซิร์ฟเวอร์ (ตั้งใน .env.local)"
-                  : "URL เก็บใน localStorage ของเบราว์เซอร์เท่านั้น — ไม่ส่งออกนอกจากตอนยิงเข้า /api/discord/notify"}
-              </p>
-            </div>
-
-            {/* ─── 3.2 Real-time Settings ─────────────────────────── */}
-            <div className="rounded-md border border-indigo-500/30 bg-indigo-500/5 p-4 space-y-4">
-              <div className="flex items-center gap-2">
-                <StepBadge n={3.2 as number} done={polling} />
-                <p className="text-[13px] font-semibold text-foreground/90">⚙️ Real-time Settings</p>
-                <span className="text-[10px] text-muted-foreground">— เลือกกลยุทธ์, รอบ Polling แล้วกดเริ่ม</span>
-              </div>
-
-              {/* Strategy row — full width, big */}
-              <div className="space-y-2">
-                <div className="flex items-center gap-2">
-                  <span className="text-[14px]">🎯</span>
-                  <label className="text-[12px] font-semibold text-foreground/90">กลยุทธ์ (Indicator) ที่ใช้สร้างสัญญาณ</label>
-                </div>
-                <Select
-                  value={strategyId}
-                  onValueChange={(v) => {
-                    if (!v) return;
-                    const next = v as StrategyId;
-                    const strat = STRATEGIES.find(s => s.id === next);
-                    if (!strat) return;
-                    setStrategyId(next);
-                    setStrategyParams({ ...strat.params });
-                    setBtResult(null);
-                  }}
-                >
-                  <SelectTrigger className="w-full h-11 text-sm font-medium"><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    <SelectGroup>
-                      <SelectLabel>เลือก Indicator / กลยุทธ์ ({STRATEGIES.length} ตัว)</SelectLabel>
-                      {STRATEGIES.map(s => (
-                        <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>
-                      ))}
-                    </SelectGroup>
-                  </SelectContent>
-                </Select>
-                {(() => {
-                  const strat = STRATEGIES.find(s => s.id === strategyId);
-                  if (!strat) return null;
-                  return (
-                    <p className="text-[10px] text-muted-foreground pl-1">
-                      💡 {strat.descriptionTh}
-                    </p>
-                  );
-                })()}
-              </div>
-
-              {/* Polling + Alerts row — large controls in 2-col grid */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                {/* Polling card */}
-                <div className="rounded border border-border/40 bg-background/60 p-3 space-y-2">
-                  <div className="flex items-center gap-2">
-                    <span className="text-[14px]">⏱</span>
-                    <label className="text-[12px] font-semibold text-foreground/90">Polling ทุก ๆ</label>
-                  </div>
-                  <Select value={String(pollSeconds)} onValueChange={v => { if (v) setPollSeconds(parseInt(v, 10) || 30); }}>
-                    <SelectTrigger className="w-full h-10"><SelectValue /></SelectTrigger>
-                    <SelectContent>
-                      {POLL_OPTIONS.map(o => (
-                        <SelectItem key={o.value} value={String(o.value)}>{o.label}</SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  <p className="text-[9px] text-muted-foreground">
-                    ความถี่ที่ดึงข้อมูลใหม่จาก Binance — แนะนำ ≥ Timeframe (เช่น TF=1h ใช้ 5-15 นาที)
-                  </p>
-                </div>
-
-                {/* Alerts toggle card */}
-                <div className="rounded border border-border/40 bg-background/60 p-3 space-y-2">
-                  <div className="flex items-center gap-2">
-                    <span className="text-[14px]">🔔</span>
-                    <label className="text-[12px] font-semibold text-foreground/90">แจ้งเตือน Discord</label>
-                  </div>
-                  <Button
-                    variant={alertsEnabled ? "default" : "outline"}
-                    size="sm"
-                    className={`w-full h-10 ${alertsEnabled ? "bg-emerald-500/90 hover:bg-emerald-500 text-white" : ""}`}
-                    onClick={() => setAlertsEnabled(v => !v)}
-                  >
-                    {alertsEnabled ? "● เปิดการแจ้งเตือน" : "○ ปิดการแจ้งเตือน"}
-                  </Button>
-                  <p className="text-[9px] text-muted-foreground">
-                    {alertsEnabled
-                      ? "ระบบจะส่ง BUY/SELL เข้า Discord เมื่อพบสัญญาณใหม่"
-                      : "ระบบจะ poll ข้อมูลแต่ไม่ส่งแจ้งเตือน (เหมาะกับการทดสอบ)"}
-                  </p>
-                </div>
-              </div>
-
-              {/* Big Start/Stop button row */}
-              <div className="space-y-2">
-                <Button
-                  onClick={togglePolling}
-                  disabled={loading}
-                  className={`w-full h-12 text-sm font-bold ${polling ? "bg-red-500 hover:bg-red-600 text-white" : "bg-emerald-500 hover:bg-emerald-600 text-white"}`}
-                >
-                  {polling ? "■ หยุด Real-time" : "▶ เริ่มดึงข้อมูล Real-time"}
-                </Button>
-                {!polling && klines.length === 0 && (
-                  <p className="text-[20px] text-amber-500/80 text-center">
-                    💡 ควรกด &quot;โหลดข้อมูล&quot; (ขั้นที่ 2) ก่อนเพื่อให้มีข้อมูลเริ่มต้นสำหรับคำนวณ Indicator
-                  </p>
-                )}
-                {polling && lastPolledAt && (() => {
-                  const remaining = Math.max(0, pollSeconds - tickSeconds);
-                  const progressPct = Math.min(100, (tickSeconds / Math.max(1, pollSeconds)) * 100);
-                  return (
-                    <div className="space-y-1.5">
-                      <div className="flex items-center justify-center gap-3 text-[20px] text-emerald-500/90 font-medium">
-                        <span className="animate-pulse">●</span>
-                        <span>อัพเดทล่าสุด: {lastPolledAt.toLocaleTimeString()}</span>
-                        <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/10 px-2 py-0.5 text-[18px] tabular-nums border border-emerald-500/30">
-                          ⏱ {tickSeconds}s / {pollSeconds}s
-                        </span>
-                      </div>
-                      <div className="text-[11px] text-muted-foreground text-center tabular-nums">
-                        ดึงข้อมูลรอบถัดไปใน <span className="text-emerald-500 font-semibold">{remaining}</span> วินาที
-                      </div>
-                      <div className="h-1.5 w-full rounded-full bg-muted overflow-hidden">
-                        <div
-                          className="h-full bg-emerald-500 transition-all duration-1000 ease-linear"
-                          style={{ width: `${progressPct}%` }}
-                        />
-                      </div>
-                    </div>
-                  );
-                })()}
-              </div>
-            </div>
-
-            <div className="rounded border border-amber-500/20 bg-amber-500/5 p-2 text-[10px] text-amber-500/80">
-              <p className="font-medium">วิธีทำงาน:</p>
-              <p>1. ระบบจะ poll /api/klines ทุก N วินาที → merge แท่งล่าสุดเข้ากับข้อมูลที่มี</p>
-              <p>2. รัน Backtest engine บนข้อมูลล่าสุด → ตรวจสัญญาณที่ &quot;แท่งปิดล่าสุด&quot; (ไม่ใช้แท่งที่กำลังก่อตัว)</p>
-              <p>3. ถ้าเป็น BUY/SELL และยังไม่เคยส่งสำหรับแท่งนั้น → ยิง embed เข้า Discord webhook (deduplicate ด้วย openTime)</p>
-            </div>
-
-            <DiscordHelpPanel />
-          </CardContent>
-        </Card>
 
         {/* ═══ ALERTS LOG ═══ */}
         {alerts.length > 0 && (
@@ -1005,17 +687,17 @@ export default function DiscordBotPage() {
                       <TableCell className="text-right tabular-nums">
                         {a.action === "SELL"
                           ? (a.entryPrice != null
-                              ? <span className="text-emerald-500/80">{fmtPrice(a.entryPrice)}</span>
-                              : <span className="text-muted-foreground">-</span>)
+                            ? <span className="text-emerald-500/80">{fmtPrice(a.entryPrice)}</span>
+                            : <span className="text-muted-foreground">-</span>)
                           : <span className="text-muted-foreground">—</span>}
                       </TableCell>
                       <TableCell className="text-right tabular-nums">
                         {a.action === "SELL"
                           ? (a.pnlPct != null
-                              ? <span className={`font-semibold ${a.pnlPct >= 0 ? "text-emerald-500" : "text-red-500"}`}>
-                                  {a.pnlPct >= 0 ? "+" : ""}{a.pnlPct.toFixed(2)}%
-                                </span>
-                              : <span className="text-muted-foreground">-</span>)
+                            ? <span className={`font-semibold ${a.pnlPct >= 0 ? "text-emerald-500" : "text-red-500"}`}>
+                              {a.pnlPct >= 0 ? "+" : ""}{a.pnlPct.toFixed(2)}%
+                            </span>
+                            : <span className="text-muted-foreground">-</span>)
                           : <span className="text-muted-foreground">—</span>}
                       </TableCell>
                       <TableCell className="text-muted-foreground text-[10px]">{fmtFullDate(a.barOpenTime)}</TableCell>
@@ -1316,11 +998,10 @@ function StepBadge({ n, done, label }: { n: number; done: boolean; label?: strin
   return (
     <div className="inline-flex items-center gap-2">
       <span
-        className={`inline-flex items-center justify-center w-7 h-7 rounded-full text-[12px] font-bold border-2 transition-colors ${
-          done
+        className={`inline-flex items-center justify-center w-7 h-7 rounded-full text-[12px] font-bold border-2 transition-colors ${done
             ? "bg-emerald-500/20 border-emerald-500 text-emerald-500"
             : "bg-muted border-border text-muted-foreground"
-        }`}
+          }`}
         title={done ? "ทำขั้นนี้แล้ว" : "ยังไม่ได้ทำ"}
       >
         {done ? "✓" : n}
@@ -1432,7 +1113,7 @@ function DiscordHelpPanel() {
               <div className="rounded border border-border/40 bg-background/50 p-2 space-y-1">
                 <p className="font-medium text-foreground/80">📤 ตัวอย่าง Payload ที่ส่งเข้า Discord:</p>
                 <pre className="text-[9px] text-muted-foreground/90 bg-background/70 rounded p-1.5 overflow-x-auto">
-{`{
+                  {`{
   "username": "Crypto Signal Bot",
   "embeds": [{
     "title": "🟢 BUY Signal — BTCUSDT",
@@ -1799,5 +1480,576 @@ function KlineTable({ klines, loading, signals }: { klines: KlineData[]; loading
         </div>
       )}
     </Card>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Watcher Components (multi-symbol Discord alerts)
+// ═══════════════════════════════════════════════════════════════
+
+// ─── Mini sparkline (last N close prices) ─────────────────────
+function MiniSparkline({ values, width = 100, height = 28 }: {
+  values: number[];
+  width?: number;
+  height?: number;
+}) {
+  if (values.length < 2) {
+    return <div style={{ width, height }} className="rounded bg-muted/30" />;
+  }
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const range = max - min || 1;
+  const step = width / (values.length - 1);
+  const points = values
+    .map((v, i) => `${(i * step).toFixed(1)},${(height - ((v - min) / range) * height).toFixed(1)}`)
+    .join(" ");
+  const isUp = values[values.length - 1] >= values[0];
+  const stroke = isUp ? "#10b981" : "#ef4444";
+  const fill = isUp ? "rgba(16,185,129,0.1)" : "rgba(239,68,68,0.1)";
+  // Area polygon
+  const areaPoints = `0,${height} ${points} ${width},${height}`;
+  return (
+    <svg width={width} height={height} className="block">
+      <polygon fill={fill} points={areaPoints} />
+      <polyline fill="none" stroke={stroke} strokeWidth="1.5" points={points} />
+    </svg>
+  );
+}
+
+// ─── Rate Limit Info Panel ────────────────────────────────────
+function RateLimitInfo({ watchers, pollingMap }: {
+  watchers: WatcherConfig[];
+  pollingMap: Record<string, boolean>;
+}) {
+  const active = watchers.filter(w => pollingMap[w.id]);
+  if (active.length === 0) {
+    return (
+      <div className="rounded border border-border/40 bg-muted/20 p-2 text-[10px] text-muted-foreground">
+        💤 ยังไม่มี watcher ที่กำลังทำงาน — กดปุ่ม ▶ ใน watcher ใดสักตัวเพื่อเริ่ม
+      </div>
+    );
+  }
+
+  // Binance request weight per minute
+  let totalWeight = 0;
+  let totalReq = 0;
+  for (const w of active) {
+    const reqPerMin = 60 / Math.max(1, w.pollSeconds);
+    totalReq += reqPerMin;
+    totalWeight += reqPerMin * binanceKlineWeight(w.klineLimit);
+  }
+
+  // Discord messages per channel — worst case = once per poll if every bar triggers signal
+  // realistic case = ~few per hour. We show "max possible" rate.
+  const perChannel = new Map<string, number>();
+  for (const w of active.filter(w => w.alertsEnabled)) {
+    const key = w.useEnvWebhook ? "ENV" : (w.webhookUrl || "(empty)");
+    const reqPerMin = 60 / Math.max(1, w.pollSeconds);
+    perChannel.set(key, (perChannel.get(key) ?? 0) + reqPerMin);
+  }
+
+  const binanceSafe = totalWeight < 100;
+  const binanceWarn = totalWeight >= 100 && totalWeight < 400;
+  const binanceDanger = totalWeight >= 400;
+  const maxChannelRate = perChannel.size > 0 ? Math.max(...Array.from(perChannel.values())) : 0;
+  const discordSafe = maxChannelRate < 20;
+  const discordDanger = maxChannelRate >= 30;
+
+  return (
+    <div className="rounded-md border border-border/50 bg-muted/10 p-3 space-y-2 text-[11px]">
+      <p className="font-semibold text-foreground/90">📊 Rate Limit Status ({active.length} watcher ทำงาน)</p>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+        {/* Binance */}
+        <div className={`rounded border p-2 ${binanceDanger ? "border-red-500/40 bg-red-500/5" : binanceWarn ? "border-amber-500/40 bg-amber-500/5" : "border-emerald-500/40 bg-emerald-500/5"}`}>
+          <div className="flex items-center justify-between">
+            <span className="font-medium">Binance API</span>
+            <span className={binanceDanger ? "text-red-500" : binanceWarn ? "text-amber-500" : "text-emerald-500"}>
+              {binanceSafe ? "✓ ปลอดภัย" : binanceWarn ? "⚠ ระวัง" : "🚫 อันตราย"}
+            </span>
+          </div>
+          <p className="tabular-nums">
+            ~{totalReq.toFixed(1)} req/min — weight {totalWeight.toFixed(1)} / 1200 ต่อนาที
+          </p>
+          <p className="text-[9px] text-muted-foreground">
+            จำกัด: 1200 weight/นาที (ทุก endpoint รวมกัน)
+          </p>
+        </div>
+
+        {/* Discord */}
+        <div className={`rounded border p-2 ${discordDanger ? "border-red-500/40 bg-red-500/5" : !discordSafe ? "border-amber-500/40 bg-amber-500/5" : "border-emerald-500/40 bg-emerald-500/5"}`}>
+          <div className="flex items-center justify-between">
+            <span className="font-medium">Discord Webhook</span>
+            <span className={discordDanger ? "text-red-500" : !discordSafe ? "text-amber-500" : "text-emerald-500"}>
+              {discordSafe ? "✓ ปลอดภัย" : discordDanger ? "🚫 อันตราย" : "⚠ ระวัง"}
+            </span>
+          </div>
+          <p className="tabular-nums">
+            สูงสุด {maxChannelRate.toFixed(1)} msg/min ต่อ channel ({perChannel.size} channel)
+          </p>
+          <p className="text-[9px] text-muted-foreground">
+            จำกัด: ~30 msg/นาที ต่อ channel
+          </p>
+        </div>
+      </div>
+
+      {!binanceSafe && (
+        <p className="text-[10px] text-amber-500/90">
+          💡 แนะนำ: เพิ่ม Polling interval หรือลดจำนวน watchers — เช่น 5 watchers ที่ poll ทุก 30s = {(5 * 2).toFixed(0)} req/min (ปลอดภัย)
+        </p>
+      )}
+    </div>
+  );
+}
+
+// ─── Watcher Row (one self-contained polling unit) ────────────
+function WatcherRow({ config, onUpdate, onRemove, onPollingChange, onAlert }: {
+  config: WatcherConfig;
+  onUpdate: (patch: Partial<WatcherConfig>) => void;
+  onRemove: () => void;
+  onPollingChange: (polling: boolean) => void;
+  onAlert: (alert: DiscordAlert) => void;
+}) {
+  const [klines, setKlines] = useState<KlineData[]>([]);
+  const [polling, setPolling] = useState(false);
+  const [lastPolledAt, setLastPolledAt] = useState<Date | null>(null);
+  const [tickSeconds, setTickSeconds] = useState(0);
+  const [error, setError] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [testMsg, setTestMsg] = useState<string | null>(null);
+  const [lastSignal, setLastSignal] = useState<"BUY" | "SELL" | null>(null);
+
+  const lastAlertBarRef = useRef<number>(0);
+  const lastBuyRef = useRef<{ price: number; time: number } | null>(null);
+  const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const cfgRef = useRef(config);
+
+  // Keep cfgRef updated so pollTick reads latest config
+  useEffect(() => { cfgRef.current = config; }, [config]);
+
+  // Report polling state up
+  useEffect(() => { onPollingChange(polling); }, [polling, onPollingChange]);
+
+  const activeSymbol = (config.customSymbol.trim().toUpperCase()) || config.symbol;
+  const sparkline = useMemo(() => klines.slice(-50).map(k => +k.close), [klines]);
+
+  // ─── Send Discord (per-watcher) ───────────────────────────
+  const send = useCallback(async (payload: {
+    content?: string;
+    embeds?: unknown[];
+    username?: string;
+  }): Promise<{ ok: boolean; message?: string }> => {
+    const c = cfgRef.current;
+    try {
+      const res = await fetch("/api/discord/notify", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ...payload,
+          webhookUrl: c.useEnvWebhook ? undefined : c.webhookUrl,
+        }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        return { ok: false, message: data.error || `HTTP ${res.status}` };
+      }
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, message: String(err) };
+    }
+  }, []);
+
+  // ─── Test webhook ─────────────────────────────────────────
+  const handleTest = useCallback(async () => {
+    setTesting(true);
+    setTestMsg(null);
+    const result = await send({
+      username: "Crypto Bot Test",
+      content: `🔔 ทดสอบ Webhook สำหรับ ${activeSymbol} (${config.interval})`,
+    });
+    setTestMsg(result.ok ? "✓ ส่งทดสอบสำเร็จ" : `✗ ${result.message}`);
+    setTesting(false);
+    setTimeout(() => setTestMsg(null), 4000);
+  }, [send, activeSymbol, config.interval]);
+
+  // ─── Send signal alert ────────────────────────────────────
+  const sendSignal = useCallback(async (action: "BUY" | "SELL", bar: KlineData, strategyName: string, sym: string, intv: string) => {
+    const price = +bar.close;
+    const isBuy = action === "BUY";
+    const emoji = isBuy ? "🟢" : "🔴";
+
+    const prevBuy = !isBuy ? lastBuyRef.current : null;
+    const entryPrice = prevBuy?.price;
+    const entryTime = prevBuy?.time;
+    const pnlPct = entryPrice != null ? ((price - entryPrice) / entryPrice) * 100 : undefined;
+
+    let color: number;
+    if (isBuy) color = 0x10b981;
+    else if (pnlPct != null && pnlPct >= 0) color = 0xf59e0b;
+    else color = 0xef4444;
+
+    const fields: { name: string; value: string; inline?: boolean }[] = [
+      { name: "ราคา", value: fmtPrice(price), inline: true },
+      { name: "Open", value: fmtPrice(bar.open), inline: true },
+      { name: "High", value: fmtPrice(bar.high), inline: true },
+      { name: "Low", value: fmtPrice(bar.low), inline: true },
+      { name: "Volume", value: fmtNum(bar.volume), inline: true },
+      { name: "เวลาแท่ง", value: fmtFullDate(bar.openTime), inline: false },
+    ];
+
+    if (!isBuy) {
+      const pnlStr = pnlPct != null ? `${pnlPct >= 0 ? "+" : ""}${pnlPct.toFixed(2)}%` : "-";
+      const pnlEmoji = pnlPct == null ? "⚪" : pnlPct >= 0 ? "🟢" : "🔴";
+      fields.push(
+        { name: "─── อ้างอิงราคา BUY ก่อนหน้า ───", value: "​", inline: false },
+        { name: "🟢 ราคา BUY", value: entryPrice != null ? fmtPrice(entryPrice) : "-", inline: true },
+        { name: "🕒 เวลา BUY", value: entryTime != null ? fmtFullDate(entryTime) : "-", inline: true },
+        { name: `${pnlEmoji} กำไร/ขาดทุน`, value: pnlStr, inline: true },
+      );
+    }
+
+    const result = await send({
+      username: "Crypto Signal Bot",
+      embeds: [{
+        title: `${emoji} ${action} Signal — ${sym}`,
+        description: `**กลยุทธ์:** ${strategyName}\n**Timeframe:** ${intv}`,
+        color,
+        fields,
+        timestamp: new Date().toISOString(),
+        footer: { text: `${sym} • ${intv} • Crypto Indicator Bot` },
+      }],
+    });
+
+    if (isBuy) lastBuyRef.current = { price, time: bar.openTime };
+    else lastBuyRef.current = null;
+
+    setLastSignal(action);
+
+    onAlert({
+      id: `${bar.openTime}-${action}-${Date.now()}`,
+      time: Date.now(),
+      symbol: sym,
+      interval: intv,
+      strategyName,
+      action,
+      price,
+      barOpenTime: bar.openTime,
+      status: result.ok ? "ok" : "error",
+      message: result.message,
+      entryPrice,
+      entryTime,
+      pnlPct,
+    });
+  }, [send, onAlert]);
+
+  // ─── Polling tick ─────────────────────────────────────────
+  const pollTick = useCallback(async () => {
+    const c = cfgRef.current;
+    const sym = (c.customSymbol.trim().toUpperCase()) || c.symbol;
+    try {
+      const params = new URLSearchParams({
+        symbol: sym,
+        interval: c.interval,
+        limit: String(c.klineLimit),
+      });
+      const res = await fetch(`/api/klines?${params}`);
+      if (!res.ok) {
+        const b = await res.json().catch(() => ({}));
+        throw new Error(b.error || `HTTP ${res.status}`);
+      }
+      const raw: BinanceKlineRaw[] = await res.json();
+      const fresh = raw.map(parseKline);
+      setKlines(prev => mergeKlines(prev, fresh));
+      setLastPolledAt(new Date());
+      setError(null);
+
+      if (c.alertsEnabled && fresh.length >= 50) {
+        const result = runBacktest(fresh, c.strategyId, c.strategyParams, 0.1);
+        const checkIdx = fresh.length - 2;
+        if (checkIdx >= 0) {
+          const sig = result.signals[checkIdx];
+          const bar = fresh[checkIdx];
+          if ((sig === "BUY" || sig === "SELL") && bar.openTime > lastAlertBarRef.current) {
+            lastAlertBarRef.current = bar.openTime;
+            const strat = STRATEGIES.find(s => s.id === c.strategyId);
+            sendSignal(sig, bar, strat?.name ?? c.strategyId, sym, c.interval);
+          }
+        }
+      }
+    } catch (err) {
+      setError(`Polling error: ${String(err)}`);
+    }
+  }, [sendSignal]);
+
+  // ─── Polling loop ─────────────────────────────────────────
+  useEffect(() => {
+    if (!polling) {
+      if (pollTimerRef.current) {
+        clearTimeout(pollTimerRef.current);
+        pollTimerRef.current = null;
+      }
+      return;
+    }
+    let cancelled = false;
+    const runLoop = async () => {
+      await pollTick();
+      if (cancelled) return;
+      const delay = Math.max(3, cfgRef.current.pollSeconds) * 1000;
+      pollTimerRef.current = setTimeout(runLoop, delay);
+    };
+    runLoop();
+    return () => {
+      cancelled = true;
+      if (pollTimerRef.current) {
+        clearTimeout(pollTimerRef.current);
+        pollTimerRef.current = null;
+      }
+    };
+  }, [polling, pollTick]);
+
+  // ─── Tick counter (1s, resets on each poll) ───────────────
+  useEffect(() => {
+    if (!polling) { setTickSeconds(0); return; }
+    setTickSeconds(0);
+    const id = window.setInterval(() => setTickSeconds(s => s + 1), 1000);
+    return () => window.clearInterval(id);
+  }, [polling, lastPolledAt]);
+
+  const togglePolling = () => {
+    if (polling) { setPolling(false); return; }
+    if (!config.useEnvWebhook && !config.webhookUrl.trim() && config.alertsEnabled) {
+      setError("กรุณาตั้ง Webhook URL ก่อน หรือเปิดใช้ env webhook หรือปิด alerts");
+      return;
+    }
+    setError(null);
+    if (klines.length > 0) {
+      lastAlertBarRef.current = klines[klines.length - 1].openTime;
+    }
+    lastBuyRef.current = null;
+    setPolling(true);
+  };
+
+  const remaining = Math.max(0, config.pollSeconds - tickSeconds);
+  const progressPct = Math.min(100, (tickSeconds / Math.max(1, config.pollSeconds)) * 100);
+
+  return (
+    <div className={`rounded-md border ${polling ? "border-emerald-500/40 bg-emerald-500/5" : "border-border/50 bg-muted/10"} overflow-hidden`}>
+      {/* Compact row */}
+      <div className="flex flex-wrap items-center gap-3 p-3">
+        {/* Symbol + TF */}
+        <div className="flex flex-col min-w-[140px]">
+          <span className="font-semibold text-sm">{activeSymbol}</span>
+          <span className="text-[14px] text-muted-foreground">TF: {config.interval}</span>
+        </div>
+
+        {/* Strategy */}
+        <div className="flex flex-col min-w-[120px]">
+          <span className="text-[14px] text-muted-foreground uppercase tracking-wider">กลยุทธ์</span>
+          <span className="text-[13px] font-medium">{STRATEGIES.find(s => s.id === config.strategyId)?.name ?? config.strategyId}</span>
+        </div>
+
+        {/* Poll interval */}
+        <div className="flex flex-col min-w-[80px]">
+          <span className="text-[14px] text-muted-foreground uppercase tracking-wider">Polling</span>
+          <span className="text-[13px] font-medium tabular-nums">
+            {config.pollSeconds < 60 ? `${config.pollSeconds}s` : config.pollSeconds < 3600 ? `${(config.pollSeconds / 60).toFixed(0)}m` : `${(config.pollSeconds / 3600).toFixed(0)}h`}
+          </span>
+        </div>
+
+        {/* Mini chart */}
+        <div className="flex flex-col items-center">
+          <span className="text-[13px] text-muted-foreground">Last {sparkline.length} bars</span>
+          <MiniSparkline values={sparkline} />
+        </div>
+
+        {/* Last price + signal */}
+        <div className="flex flex-col min-w-[100px]">
+          <span className="text-[13px] text-muted-foreground">ราคาล่าสุด</span>
+          {klines.length > 0 ? (
+            <span className="text-[12px] font-semibold tabular-nums">{fmtPrice(klines[klines.length - 1].close)}</span>
+          ) : (
+            <span className="text-[13px] text-muted-foreground">—</span>
+          )}
+          {lastSignal && (
+            <Badge variant="outline" className={`text-[13px] mt-0.5 ${lastSignal === "BUY" ? "text-emerald-500 border-emerald-500/30" : "text-red-500 border-red-500/30"}`}>
+              ล่าสุด: {lastSignal}
+            </Badge>
+          )}
+        </div>
+
+        {/* Status + countdown */}
+        <div className="flex flex-col min-w-[120px]">
+          {polling ? (
+            <>
+              <span className="text-[13px] text-emerald-500 animate-pulse">● LIVE</span>
+              <span className="text-[13px] tabular-nums text-muted-foreground">
+                {tickSeconds}s / {config.pollSeconds}s ({remaining}s left)
+              </span>
+              <div className="h-1 w-full rounded-full bg-muted overflow-hidden mt-0.5">
+                <div className="h-full bg-emerald-500 transition-all duration-1000 ease-linear" style={{ width: `${progressPct}%` }} />
+              </div>
+            </>
+          ) : (
+            <span className="text-[13px] text-muted-foreground">○ ปิดอยู่</span>
+          )}
+        </div>
+
+        {/* Actions */}
+        <div className="ml-auto flex items-center gap-1.5">
+          <Button
+            size="sm"
+            className={polling ? "bg-red-500 hover:bg-red-600 text-white" : "bg-emerald-500 hover:bg-emerald-600 text-white"}
+            onClick={togglePolling}
+          >
+            {polling ? "■ หยุด" : "▶ เริ่ม"}
+          </Button>
+          <Button size="sm" variant="outline" onClick={() => setExpanded(v => !v)}>
+            {expanded ? "▲ ย่อ" : "▼ แก้ไข"}
+          </Button>
+          <Button size="sm" variant="outline" className="text-red-500 border-red-500/30 hover:bg-red-500/10" onClick={onRemove}>
+            ✕
+          </Button>
+        </div>
+      </div>
+
+      {error && (
+        <div className="px-3 pb-2">
+          <p className="text-[13px] text-red-500">{error}</p>
+        </div>
+      )}
+
+      {/* Expanded edit panel */}
+      {expanded && (
+        <div className="border-t border-border/40 bg-background/40 p-3 space-y-3">
+          {/* Symbol + TF + Strategy + Poll */}
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <Field label="คู่เหรียญ">
+              <Select value={config.symbol} onValueChange={(v) => { if (v) onUpdate({ symbol: v, customSymbol: "" }); }}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectGroup>
+                    <SelectLabel>ยอดนิยม</SelectLabel>
+                    {POPULAR_SYMBOLS.map(s => <SelectItem key={s} value={s}>{s}</SelectItem>)}
+                  </SelectGroup>
+                </SelectContent>
+              </Select>
+            </Field>
+            <Field label="กำหนดเอง">
+              <Input
+                placeholder="เช่น PEPEUSDT"
+                value={config.customSymbol}
+                onChange={e => onUpdate({ customSymbol: e.target.value })}
+              />
+            </Field>
+            <Field label="ช่วงเวลา">
+              <Select value={config.interval} onValueChange={(v) => { if (v) onUpdate({ interval: v as Interval }); }}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {Object.entries(INTERVAL_GROUPS).map(([g, ints]) => (
+                    <SelectGroup key={g}><SelectLabel>{g}</SelectLabel>
+                      {ints.map(i => <SelectItem key={i} value={i}>{i}</SelectItem>)}
+                    </SelectGroup>
+                  ))}
+                </SelectContent>
+              </Select>
+            </Field>
+            <Field label="Polling ทุก">
+              <Select value={String(config.pollSeconds)} onValueChange={v => { if (v) onUpdate({ pollSeconds: parseInt(v, 10) || 30 }); }}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {POLL_OPTIONS.map(o => <SelectItem key={o.value} value={String(o.value)}>{o.label}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </Field>
+          </div>
+
+          {/* Strategy */}
+          <Field label="กลยุทธ์ (Indicator)">
+            <Select
+              value={config.strategyId}
+              onValueChange={(v) => {
+                if (!v) return;
+                const next = v as StrategyId;
+                const strat = STRATEGIES.find(s => s.id === next);
+                if (!strat) return;
+                onUpdate({ strategyId: next, strategyParams: { ...strat.params } });
+              }}
+            >
+              <SelectTrigger><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectGroup>
+                  <SelectLabel>เลือก Indicator</SelectLabel>
+                  {STRATEGIES.map(s => <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>)}
+                </SelectGroup>
+              </SelectContent>
+            </Select>
+          </Field>
+
+          {/* Webhook */}
+          <div className="grid grid-cols-1 md:grid-cols-[1fr_auto_auto] gap-2 items-end">
+            <Field label="Discord Webhook URL">
+              <Input
+                type="password"
+                placeholder="https://discord.com/api/webhooks/..."
+                value={config.webhookUrl}
+                onChange={e => onUpdate({ webhookUrl: e.target.value })}
+                disabled={config.useEnvWebhook}
+                autoComplete="off"
+              />
+            </Field>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleTest}
+              disabled={testing || (!config.useEnvWebhook && !config.webhookUrl.trim())}
+            >
+              {testing ? "ทดสอบ..." : "ทดสอบ"}
+            </Button>
+            <Button
+              variant={config.useEnvWebhook ? "default" : "outline"}
+              size="sm"
+              onClick={() => onUpdate({ useEnvWebhook: !config.useEnvWebhook })}
+            >
+              {config.useEnvWebhook ? "● ใช้ env" : "○ ใช้ URL"}
+            </Button>
+          </div>
+
+          {testMsg && (
+            <p className={`text-[10px] ${testMsg.startsWith("✓") ? "text-emerald-500" : "text-red-500"}`}>
+              {testMsg}
+            </p>
+          )}
+
+          {/* Toggles */}
+          <div className="flex flex-wrap items-center gap-3">
+            <Field label="แจ้งเตือน Discord">
+              <Button
+                variant={config.alertsEnabled ? "default" : "outline"}
+                size="sm"
+                className={config.alertsEnabled ? "bg-emerald-500/90 text-white" : ""}
+                onClick={() => onUpdate({ alertsEnabled: !config.alertsEnabled })}
+              >
+                {config.alertsEnabled ? "● เปิด" : "○ ปิด"}
+              </Button>
+            </Field>
+            <Field label="จำนวนแท่งเทียน">
+              <Select value={String(config.klineLimit)} onValueChange={v => { if (v) onUpdate({ klineLimit: parseInt(v, 10) || 200 }); }}>
+                <SelectTrigger className="w-24"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {[50, 100, 200, 500, 1000].map(n => <SelectItem key={n} value={String(n)}>{n}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </Field>
+          </div>
+
+          {lastPolledAt && (
+            <p className="text-[10px] text-muted-foreground">
+              อัพเดทล่าสุด: {lastPolledAt.toLocaleTimeString()} | klines โหลด: {klines.length}
+            </p>
+          )}
+        </div>
+      )}
+    </div>
   );
 }
