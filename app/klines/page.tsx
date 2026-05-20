@@ -498,6 +498,9 @@ export default function KlinesPage() {
             <Button variant="outline" size="sm" className="border border-yellow-500/30 bg-yellow-500/10 text-[11px] font-medium text-yellow-500 hover:bg-yellow-500/20">
               <Link href="/trading/Binance">Binance Trading</Link>
             </Button>
+            <Button variant="outline" size="sm" className="border border-indigo-500/30 bg-indigo-500/10 text-[11px] font-medium text-indigo-400 hover:bg-indigo-500/20">
+              <Link href="/discordBot">Discord Bot</Link>
+            </Button>
           </div>
 
           <div className="flex items-center gap-2">

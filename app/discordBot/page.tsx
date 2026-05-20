@@ -1,0 +1,1614 @@
+"use client";
+
+import React, { useState, useCallback, useEffect, useRef, useMemo } from "react";
+import {
+  type KlineData,
+  type BinanceKlineRaw,
+  type Interval,
+  parseKline,
+} from "@/lib/types/kline";
+import { computeAll, type AllIndicators } from "@/lib/indicators";
+import {
+  runBacktest,
+  STRATEGIES,
+  type StrategyId,
+  type BacktestResult,
+  type Trade,
+  type SignalAction,
+} from "@/lib/backtest";
+import { Card, CardHeader, CardTitle, CardDescription, CardContent, CardAction } from "@/components/ui/card";
+import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem, SelectGroup, SelectLabel } from "@/components/ui/select";
+import { Input } from "@/components/ui/input";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { Table, TableHeader, TableBody, TableHead, TableRow, TableCell } from "@/components/ui/table";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Separator } from "@/components/ui/separator";
+import KlineGraph from "@/app/klines/ui/graph";
+import { ThemeToggle } from "@/components/theme-toggle";
+import Link from "next/link";
+
+// ─── Constants ─────────────────────────────────────────────────
+const POPULAR_SYMBOLS = [
+  "BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT",
+  "ADAUSDT", "DOGEUSDT", "AVAXUSDT", "DOTUSDT", "LINKUSDT",
+  "MATICUSDT", "LTCUSDT", "ATOMUSDT", "NEARUSDT", "APTUSDT",
+  "ARBUSDT", "OPUSDT", "SUIUSDT", "INJUSDT", "FETUSDT",
+];
+
+const INTERVAL_GROUPS: Record<string, Interval[]> = {
+  "วินาที": ["1s"],
+  "นาที": ["1m", "3m", "5m", "15m", "30m"],
+  "ชั่วโมง": ["1h", "2h", "4h", "6h", "8h", "12h"],
+  "วัน+": ["1d", "3d", "1w", "1M"],
+};
+
+const POLL_OPTIONS: { value: number; label: string }[] = [
+  { value: 5, label: "5 วินาที" },
+  { value: 10, label: "10 วินาที" },
+  { value: 15, label: "15 วินาที" },
+  { value: 30, label: "30 วินาที" },
+  { value: 60, label: "1 นาที" },
+  { value: 120, label: "2 นาที" },
+  { value: 300, label: "5 นาที" },
+  { value: 600, label: "10 นาที" },
+  { value: 900, label: "15 นาที" },
+  { value: 1200, label: "20 นาที" },
+  { value: 1800, label: "30 นาที" },
+  { value: 3600, label: "1 ชั่วโมง" },
+  { value: 7200, label: "2 ชั่วโมง" },
+  { value: 10800, label: "3 ชั่วโมง" },
+  { value: 14400, label: "4 ชั่วโมง" },
+  { value: 86400, label: "1 วัน" },
+];
+
+const WEBHOOK_STORAGE_KEY = "discordBot.webhookUrl";
+
+// ─── Formatting ────────────────────────────────────────────────
+function fmtNum(val: string | number, dec = 2): string {
+  const n = typeof val === "string" ? parseFloat(val) : val;
+  if (Math.abs(n) >= 1_000_000) return `${(n / 1_000_000).toFixed(2)}M`;
+  if (Math.abs(n) >= 1_000) return `${(n / 1_000).toFixed(2)}K`;
+  return n.toFixed(dec);
+}
+function fmtPrice(val: string | number): string {
+  const n = typeof val === "string" ? parseFloat(val) : val;
+  if (n >= 1000) return n.toFixed(2);
+  if (n >= 1) return n.toFixed(4);
+  return n.toFixed(6);
+}
+function fmtDate(ts: number): string {
+  return new Date(ts).toLocaleString("en-US", { month: "short", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false });
+}
+function fmtFullDate(ts: number): string {
+  return new Date(ts).toLocaleString("en-US", { year: "numeric", month: "short", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false });
+}
+function pnlColor(v: number): string {
+  return v > 0 ? "text-emerald-500" : v < 0 ? "text-red-500" : "text-muted-foreground";
+}
+function pnlBg(v: number): string {
+  return v > 0 ? "bg-emerald-500/10" : v < 0 ? "bg-red-500/10" : "bg-muted";
+}
+
+// ─── Mini Candle ───────────────────────────────────────────────
+function MiniCandle({ kline }: { kline: KlineData }) {
+  const o = +kline.open, c = +kline.close, h = +kline.high, l = +kline.low;
+  const isUp = c >= o;
+  const range = h - l;
+  if (range === 0) return <div className="h-6 w-2" />;
+  const bodyTop = ((h - Math.max(o, c)) / range) * 100;
+  const bodyHeight = (Math.abs(c - o) / range) * 100;
+  const color = isUp ? "bg-emerald-500" : "bg-red-500";
+  return (
+    <div className="relative h-6 w-2 mx-auto">
+      <div className={`absolute left-1/2 w-px -translate-x-1/2 ${color}`} style={{ top: 0, height: "100%" }} />
+      <div className={`absolute left-0 w-full ${color}`} style={{ top: `${bodyTop}%`, height: `${Math.max(bodyHeight, 4)}%` }} />
+    </div>
+  );
+}
+
+// ─── Equity Chart ──────────────────────────────────────────────
+function EquityChart({ curve, trades }: { curve: number[]; trades: Trade[] }) {
+  const step = Math.max(1, Math.floor(curve.length / 200));
+  const sampled = curve.filter((_, i) => i % step === 0 || i === curve.length - 1);
+  const max = Math.max(...sampled, 0.01);
+  const min = Math.min(...sampled, -0.01);
+  const range = max - min || 1;
+  const zeroY = ((max - 0) / range) * 100;
+
+  const tradeMarkers: { barIdx: number; pnlPct: number }[] = [];
+  for (const t of trades) {
+    const sampledIdx = Math.round(t.exitIdx / step);
+    const clampedIdx = Math.min(sampledIdx, sampled.length - 1);
+    tradeMarkers.push({ barIdx: clampedIdx, pnlPct: t.pnlPct });
+  }
+
+  const markerMap = new Map<number, number[]>();
+  for (const m of tradeMarkers) {
+    const arr = markerMap.get(m.barIdx) || [];
+    arr.push(m.pnlPct);
+    markerMap.set(m.barIdx, arr);
+  }
+
+  return (
+    <div className="relative h-40 w-full">
+      <div className="absolute left-0 right-0 border-t border-dashed border-muted-foreground/30" style={{ top: `${zeroY}%` }} />
+      <div className="absolute left-1 text-[9px] text-muted-foreground" style={{ top: `${Math.max(zeroY - 5, 0)}%` }}>0%</div>
+      <div className="flex h-full items-end gap-px">
+        {sampled.map((val, i) => {
+          const h = Math.abs(val) / range * 100;
+          const isPos = val >= 0;
+          const markers = markerMap.get(i);
+          return (
+            <div key={i} className="flex-1 flex flex-col justify-end h-full relative group">
+              {isPos ? (
+                <div className="w-full bg-emerald-500/60 absolute" style={{ bottom: `${100 - zeroY}%`, height: `${Math.max(h, 0.5)}%` }} />
+              ) : (
+                <div className="w-full bg-red-500/60 absolute" style={{ top: `${zeroY}%`, height: `${Math.max(h, 0.5)}%` }} />
+              )}
+              {markers && (
+                <div
+                  className={`absolute w-1.5 h-1.5 rounded-full left-1/2 -translate-x-1/2 z-10 ${markers[markers.length - 1] >= 0 ? "bg-emerald-400" : "bg-red-400"}`}
+                  style={{
+                    top: isPos
+                      ? `${zeroY - (val / range) * 100 - 2}%`
+                      : `${zeroY + (Math.abs(val) / range) * 100}%`,
+                  }}
+                />
+              )}
+            </div>
+          );
+        })}
+      </div>
+      <div className="absolute top-0 right-1 text-[9px] text-emerald-500 tabular-nums">+{max.toFixed(1)}%</div>
+      <div className="absolute bottom-0 right-1 text-[9px] text-red-500 tabular-nums">{min.toFixed(1)}%</div>
+    </div>
+  );
+}
+
+// ─── Discord Alert Entry ───────────────────────────────────────
+interface DiscordAlert {
+  id: string;
+  time: number;
+  symbol: string;
+  interval: string;
+  strategyName: string;
+  action: "BUY" | "SELL";
+  price: number;
+  barOpenTime: number;
+  status: "ok" | "error";
+  message?: string;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Main Page
+// ═══════════════════════════════════════════════════════════════
+export default function DiscordBotPage() {
+  // ── Data state ──
+  const [symbol, setSymbol] = useState("BTCUSDT");
+  const [customSymbol, setCustomSymbol] = useState("");
+  const [interval, setInterval] = useState<Interval>("1h");
+  const [limit, setLimit] = useState("200");
+  const [startTime, setStartTime] = useState("");
+  const [endTime, setEndTime] = useState("");
+  const [klines, setKlines] = useState<KlineData[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [lastFetch, setLastFetch] = useState<Date | null>(null);
+  const [historicalProgress, setHistoricalProgress] = useState<{ current: number } | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
+
+  // ── Indicator + Backtest state ──
+  const [indicators, setIndicators] = useState<AllIndicators | null>(null);
+  const [strategyId, setStrategyId] = useState<StrategyId>("rsi");
+  const [strategyParams, setStrategyParams] = useState<Record<string, number>>(
+    () => ({ ...STRATEGIES.find(s => s.id === "rsi")!.params })
+  );
+  const [feesPct, setFeesPct] = useState("0.1");
+  const [btResult, setBtResult] = useState<BacktestResult | null>(null);
+  const [btRunning, setBtRunning] = useState(false);
+  const [allBtResults, setAllBtResults] = useState<{ strategyId: StrategyId; name: string; result: BacktestResult }[] | null>(null);
+  const [allBtRunning, setAllBtRunning] = useState(false);
+  const [allBtExpanded, setAllBtExpanded] = useState<Set<StrategyId>>(new Set());
+
+  // ── Discord + Realtime state ──
+  const [webhookUrl, setWebhookUrl] = useState("");
+  const [useEnvWebhook, setUseEnvWebhook] = useState(false);
+  const [alertsEnabled, setAlertsEnabled] = useState(true);
+  const [pollSeconds, setPollSeconds] = useState(30);
+  const [polling, setPolling] = useState(false);
+  const [lastPolledAt, setLastPolledAt] = useState<Date | null>(null);
+  const [alerts, setAlerts] = useState<DiscordAlert[]>([]);
+  const [testingWebhook, setTestingWebhook] = useState(false);
+  const lastAlertBarRef = useRef<number>(0);
+  const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pollSecondsRef = useRef(pollSeconds);
+  const pollStateRef = useRef<{
+    symbol: string;
+    interval: Interval;
+    limit: string;
+    strategyId: StrategyId;
+    strategyParams: Record<string, number>;
+    feesPct: string;
+    webhookUrl: string;
+    alertsEnabled: boolean;
+  } | null>(null);
+
+  const activeSymbol = customSymbol.trim().toUpperCase() || symbol;
+
+  // ── Load webhook URL from localStorage on mount ──
+  useEffect(() => {
+    const saved = typeof window !== "undefined" ? localStorage.getItem(WEBHOOK_STORAGE_KEY) : null;
+    if (saved) setWebhookUrl(saved);
+  }, []);
+
+  // ── Persist webhook URL ──
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (webhookUrl) localStorage.setItem(WEBHOOK_STORAGE_KEY, webhookUrl);
+    else localStorage.removeItem(WEBHOOK_STORAGE_KEY);
+  }, [webhookUrl]);
+
+  // ── Compute indicators when klines change ──
+  useEffect(() => {
+    if (klines.length >= 15) setIndicators(computeAll(klines));
+    else setIndicators(null);
+  }, [klines]);
+
+  // ── Track latest config in refs for the polling loop ──
+  useEffect(() => {
+    pollSecondsRef.current = pollSeconds;
+  }, [pollSeconds]);
+
+  useEffect(() => {
+    pollStateRef.current = {
+      symbol: activeSymbol,
+      interval,
+      limit,
+      strategyId,
+      strategyParams,
+      feesPct,
+      webhookUrl,
+      alertsEnabled,
+    };
+  }, [activeSymbol, interval, limit, strategyId, strategyParams, feesPct, webhookUrl, alertsEnabled]);
+
+  // ─── Fetch one-shot realtime ───────────────────────────────
+  const fetchRealtime = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    setKlines([]);
+    setIndicators(null);
+    setBtResult(null);
+    setAllBtResults(null);
+    setHistoricalProgress(null);
+    lastAlertBarRef.current = 0;
+    try {
+      const params = new URLSearchParams({ symbol: activeSymbol, interval, limit });
+      const res = await fetch(`/api/klines?${params}`);
+      if (!res.ok) { const b = await res.json(); throw new Error(b.error || `HTTP ${res.status}`); }
+      const raw: BinanceKlineRaw[] = await res.json();
+      setKlines(raw.map(parseKline));
+      setLastFetch(new Date());
+    } catch (err) { setError(String(err)); }
+    finally { setLoading(false); }
+  }, [activeSymbol, interval, limit]);
+
+  // ─── Fetch historical ──────────────────────────────────────
+  const fetchHistorical = useCallback(async () => {
+    if (!startTime) { setError("กรุณาระบุเวลาเริ่มต้น"); return; }
+    setLoading(true); setError(null); setKlines([]); setIndicators(null); setBtResult(null); setAllBtResults(null);
+    setHistoricalProgress({ current: 0 });
+    lastAlertBarRef.current = 0;
+    const controller = new AbortController();
+    abortRef.current = controller;
+    try {
+      const st = new Date(startTime).getTime();
+      const et = endTime ? new Date(endTime).getTime() : Date.now();
+      let cur = st;
+      const all: KlineData[] = [];
+      while (cur < et) {
+        if (controller.signal.aborted) break;
+        setHistoricalProgress({ current: all.length });
+        const params = new URLSearchParams({
+          symbol: activeSymbol, interval, limit: "1000",
+          startTime: cur.toString(), endTime: et.toString(),
+        });
+        const res = await fetch(`/api/klines?${params}`, { signal: controller.signal });
+        if (!res.ok) { const b = await res.json(); throw new Error(b.error || `HTTP ${res.status}`); }
+        const raw: BinanceKlineRaw[] = await res.json();
+        if (raw.length === 0) break;
+        const parsed = raw.map(parseKline);
+        all.push(...parsed);
+        const last = parsed[parsed.length - 1].closeTime;
+        if (last >= et || raw.length < 1000) break;
+        cur = last + 1;
+        await new Promise(r => setTimeout(r, 100));
+      }
+      setKlines(all);
+      setLastFetch(new Date());
+    } catch (err) {
+      if (!controller.signal.aborted) setError(String(err));
+    } finally {
+      setLoading(false); setHistoricalProgress(null); abortRef.current = null;
+    }
+  }, [activeSymbol, interval, startTime, endTime]);
+
+  // ─── Send Discord notification ─────────────────────────────
+  const sendDiscord = useCallback(async (payload: {
+    content?: string;
+    embeds?: unknown[];
+    username?: string;
+    webhookUrl?: string;
+  }): Promise<{ ok: boolean; message?: string }> => {
+    try {
+      const res = await fetch("/api/discord/notify", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        return { ok: false, message: data.error || `HTTP ${res.status}` };
+      }
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, message: String(err) };
+    }
+  }, []);
+
+  // ─── Test webhook ──────────────────────────────────────────
+  const testWebhook = useCallback(async () => {
+    setTestingWebhook(true);
+    setError(null);
+    const result = await sendDiscord({
+      username: "Crypto Bot Test",
+      content: "🔔 ทดสอบ Discord Webhook สำเร็จ! ระบบพร้อมส่งสัญญาณซื้อขาย",
+      webhookUrl: useEnvWebhook ? undefined : webhookUrl,
+    });
+    if (!result.ok) setError(`ทดสอบ Webhook ล้มเหลว: ${result.message}`);
+    else setError(null);
+    setTestingWebhook(false);
+  }, [sendDiscord, webhookUrl, useEnvWebhook]);
+
+  // ─── Send signal alert to Discord ──────────────────────────
+  const sendSignalAlert = useCallback(async (params: {
+    action: "BUY" | "SELL";
+    bar: KlineData;
+    strategyName: string;
+    sym: string;
+    intv: string;
+    hookUrl: string;
+  }) => {
+    const { action, bar, strategyName, sym, intv, hookUrl } = params;
+    const price = +bar.close;
+    const isBuy = action === "BUY";
+    const color = isBuy ? 0x10b981 : 0xef4444;
+    const emoji = isBuy ? "🟢" : "🔴";
+
+    const result = await sendDiscord({
+      username: "Crypto Signal Bot",
+      webhookUrl: useEnvWebhook ? undefined : hookUrl,
+      embeds: [{
+        title: `${emoji} ${action} Signal — ${sym}`,
+        description: `**กลยุทธ์:** ${strategyName}\n**Timeframe:** ${intv}`,
+        color,
+        fields: [
+          { name: "ราคา", value: fmtPrice(price), inline: true },
+          { name: "Open", value: fmtPrice(bar.open), inline: true },
+          { name: "High", value: fmtPrice(bar.high), inline: true },
+          { name: "Low", value: fmtPrice(bar.low), inline: true },
+          { name: "Volume", value: fmtNum(bar.volume), inline: true },
+          { name: "เวลาแท่ง", value: fmtFullDate(bar.openTime), inline: false },
+        ],
+        timestamp: new Date().toISOString(),
+        footer: { text: `${sym} • ${intv} • Crypto Indicator Bot` },
+      }],
+    });
+
+    const alert: DiscordAlert = {
+      id: `${bar.openTime}-${action}-${Date.now()}`,
+      time: Date.now(),
+      symbol: sym,
+      interval: intv,
+      strategyName,
+      action,
+      price,
+      barOpenTime: bar.openTime,
+      status: result.ok ? "ok" : "error",
+      message: result.message,
+    };
+    setAlerts(prev => [alert, ...prev].slice(0, 50));
+  }, [sendDiscord, useEnvWebhook]);
+
+  // ─── Polling tick ──────────────────────────────────────────
+  const pollTick = useCallback(async () => {
+    const state = pollStateRef.current;
+    if (!state) return;
+    try {
+      const params = new URLSearchParams({
+        symbol: state.symbol,
+        interval: state.interval,
+        limit: state.limit,
+      });
+      const res = await fetch(`/api/klines?${params}`);
+      if (!res.ok) {
+        const b = await res.json().catch(() => ({}));
+        throw new Error(b.error || `HTTP ${res.status}`);
+      }
+      const raw: BinanceKlineRaw[] = await res.json();
+      const fresh = raw.map(parseKline);
+
+      setKlines(prev => mergeKlines(prev, fresh));
+      setLastPolledAt(new Date());
+      setLastFetch(new Date());
+
+      // Use the freshly-fetched klines for signal detection (no race with React state)
+      if (state.alertsEnabled && fresh.length >= 50) {
+        const result = runBacktest(
+          fresh,
+          state.strategyId,
+          state.strategyParams,
+          parseFloat(state.feesPct) || 0.1,
+        );
+        // Use the last fully-closed bar (avoid forming bar)
+        const checkIdx = fresh.length - 2;
+        if (checkIdx >= 0) {
+          const sig = result.signals[checkIdx];
+          const bar = fresh[checkIdx];
+          if ((sig === "BUY" || sig === "SELL") && bar.openTime > lastAlertBarRef.current) {
+            lastAlertBarRef.current = bar.openTime;
+            const strat = STRATEGIES.find(s => s.id === state.strategyId);
+            sendSignalAlert({
+              action: sig,
+              bar,
+              strategyName: strat?.name ?? state.strategyId,
+              sym: state.symbol,
+              intv: state.interval,
+              hookUrl: state.webhookUrl,
+            });
+          }
+        }
+      }
+    } catch (err) {
+      setError(`Polling error: ${String(err)}`);
+    }
+  }, [sendSignalAlert]);
+
+  // ─── Polling loop driver ───────────────────────────────────
+  useEffect(() => {
+    if (!polling) {
+      if (pollTimerRef.current) {
+        clearTimeout(pollTimerRef.current);
+        pollTimerRef.current = null;
+      }
+      return;
+    }
+    let cancelled = false;
+    const runLoop = async () => {
+      await pollTick();
+      if (cancelled) return;
+      const delay = Math.max(3, pollSecondsRef.current) * 1000;
+      pollTimerRef.current = setTimeout(runLoop, delay);
+    };
+    runLoop();
+    return () => {
+      cancelled = true;
+      if (pollTimerRef.current) {
+        clearTimeout(pollTimerRef.current);
+        pollTimerRef.current = null;
+      }
+    };
+  }, [polling, pollTick]);
+
+  // ─── Run single Backtest ───────────────────────────────────
+  const runBt = useCallback(() => {
+    if (klines.length < 50) { setError("ต้องมีอย่างน้อย 50 แท่งเทียนเพื่อรัน Backtest"); return; }
+    setBtRunning(true);
+    setError(null);
+    setTimeout(() => {
+      try {
+        const result = runBacktest(klines, strategyId, strategyParams, parseFloat(feesPct) || 0.1);
+        setBtResult(result);
+      } catch (err) { setError(String(err)); }
+      finally { setBtRunning(false); }
+    }, 10);
+  }, [klines, strategyId, strategyParams, feesPct]);
+
+  // ─── Run All Backtests ─────────────────────────────────────
+  const runAllBt = useCallback(() => {
+    if (klines.length < 50) { setError("ต้องมีอย่างน้อย 50 แท่งเทียนเพื่อรัน Backtest"); return; }
+    setAllBtRunning(true);
+    setError(null);
+    setAllBtResults(null);
+    setTimeout(() => {
+      try {
+        const fees = parseFloat(feesPct) || 0.1;
+        const results = STRATEGIES.map(s => ({
+          strategyId: s.id,
+          name: s.name,
+          result: runBacktest(klines, s.id, { ...s.params }, fees),
+        }));
+        results.sort((a, b) => b.result.totalPnlPct - a.result.totalPnlPct);
+        setAllBtResults(results);
+        setAllBtExpanded(new Set());
+      } catch (err) { setError(String(err)); }
+      finally { setAllBtRunning(false); }
+    }, 10);
+  }, [klines, feesPct]);
+
+  // ── Stop polling when key config changes that would confuse the loop ──
+  const togglePolling = useCallback(() => {
+    if (polling) {
+      setPolling(false);
+      return;
+    }
+    if (!useEnvWebhook && !webhookUrl.trim() && alertsEnabled) {
+      setError("กรุณาตั้ง Discord Webhook URL ก่อน หรือเปิดใช้ env webhook หรือปิด alert");
+      return;
+    }
+    setError(null);
+    // Reset alert dedupe to current latest bar so we don't blast historical alerts
+    if (klines.length > 0) {
+      lastAlertBarRef.current = klines[klines.length - 1].openTime;
+    }
+    setPolling(true);
+  }, [polling, useEnvWebhook, webhookUrl, alertsEnabled, klines]);
+
+  return (
+    <div className="min-h-screen bg-background text-foreground">
+      <div className="mx-auto max-w-[1400px] px-4 py-6 space-y-4">
+        {/* Header */}
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-4">
+            <div>
+              <h1 className="text-lg font-semibold tracking-tight">Discord Bot — Real-time Signal Alerts</h1>
+              <p className="text-xs text-muted-foreground">ดึงข้อมูลแท่งเทียน → คำนวณ Indicator → ส่งสัญญาณ BUY/SELL เข้า Discord อัตโนมัติ</p>
+            </div>
+            <div className="flex gap-2">
+              <Button variant="outline" size="sm" className="border border-blue-500/30 bg-blue-500/10 text-[11px] font-medium text-blue-500 hover:bg-blue-500/20">
+                <Link href="/klines">Klines & Backtest</Link>
+              </Button>
+              <Button variant="outline" size="sm" className="border border-yellow-500/30 bg-yellow-500/10 text-[11px] font-medium text-yellow-500 hover:bg-yellow-500/20">
+                <Link href="/trading/Binance">Binance Trading</Link>
+              </Button>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2">
+            {polling && (
+              <Badge variant="outline" className="text-[10px] text-emerald-500 border-emerald-500/40 animate-pulse">
+                ● LIVE polling ทุก {pollSeconds}s
+              </Badge>
+            )}
+            {lastFetch && (
+              <Badge variant="outline" className="text-[10px] text-muted-foreground">
+                ล่าสุด: {lastFetch.toLocaleTimeString()}
+              </Badge>
+            )}
+            {klines.length > 0 && (
+              <Badge variant="secondary">{klines.length.toLocaleString()} แท่งเทียน</Badge>
+            )}
+            <ThemeToggle />
+          </div>
+        </div>
+        <Separator />
+
+        {/* ═══ CONFIG ═══ */}
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-[1fr_650px]">
+          <Card size="sm">
+            <CardHeader>
+              <CardTitle>ตั้งค่า</CardTitle>
+              <CardDescription>เลือกคู่เหรียญและช่วงเวลา แล้วดึงข้อมูลแบบเรียลไทม์หรือย้อนหลัง</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="flex flex-wrap gap-3 items-center">
+                <Field label="คู่เหรียญ">
+                  <Select value={symbol} onValueChange={(v) => { if (v) { setSymbol(v); setCustomSymbol(""); } }}>
+                    <SelectTrigger className="w-36"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectGroup><SelectLabel>ยอดนิยม</SelectLabel>
+                        {POPULAR_SYMBOLS.map(s => <SelectItem key={s} value={s}>{s}</SelectItem>)}
+                      </SelectGroup>
+                    </SelectContent>
+                  </Select>
+                </Field>
+                <Field label="กำหนดเอง">
+                  <Input placeholder="เช่น PEPEUSDT" value={customSymbol} onChange={e => setCustomSymbol(e.target.value)} className="w-36" />
+                </Field>
+                <Field label="ช่วงเวลา">
+                  <Select value={interval} onValueChange={(v) => { if (v) setInterval(v as Interval); }}>
+                    <SelectTrigger className="w-24"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      {Object.entries(INTERVAL_GROUPS).map(([g, ints]) => (
+                        <SelectGroup key={g}><SelectLabel>{g}</SelectLabel>
+                          {ints.map(i => <SelectItem key={i} value={i}>{i}</SelectItem>)}
+                        </SelectGroup>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </Field>
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* Fetch Data */}
+          <Card size="sm">
+            <CardHeader><CardTitle>ดึงข้อมูล</CardTitle></CardHeader>
+            <CardContent className="space-y-4">
+              <div className="space-y-2">
+                <div className="flex items-end gap-2 flex-wrap">
+                  <Field label="โหลดข้อมูล จำนวนแท่งเทียน">
+                    <Select value={limit} onValueChange={(v) => { if (v) setLimit(v); }}>
+                      <SelectTrigger className="w-32"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        {["50", "100", "200", "500", "1000"].map(l => <SelectItem key={l} value={l}>{l}</SelectItem>)}
+                      </SelectContent>
+                    </Select>
+                  </Field>
+                  <Button onClick={fetchRealtime} disabled={loading || polling} className="h-9">
+                    {loading ? "กำลังโหลด..." : "โหลดข้อมูล"}
+                  </Button>
+                </div>
+                <p className="text-[10px] text-muted-foreground">โหลด snapshot ครั้งเดียว — ใช้สำหรับเริ่มต้น แล้วเปิดโหมด Realtime เพื่อเติมข้อมูลต่อเนื่อง</p>
+              </div>
+
+              <Separator />
+
+              {/* Historical fetch */}
+              <div className="space-y-2">
+                <div className="flex flex-wrap items-end gap-2">
+                  <Field label="ดึงข้อมูลย้อนหลัง เริ่มต้น">
+                    <Input type="datetime-local" value={startTime} onChange={e => setStartTime(e.target.value)} className="w-44" />
+                  </Field>
+                  <Field label="สิ้นสุด">
+                    <Input type="datetime-local" value={endTime} onChange={e => setEndTime(e.target.value)} className="w-44" />
+                  </Field>
+                  <Button onClick={fetchHistorical} disabled={loading || polling} className="h-9">
+                    {loading ? "กำลังดึง..." : "ดึงย้อนหลัง"}
+                  </Button>
+                  {loading && (
+                    <Button variant="destructive" size="sm" onClick={() => abortRef.current?.abort()}>ยกเลิก</Button>
+                  )}
+                </div>
+                {historicalProgress && (
+                  <span className="text-[10px] text-muted-foreground animate-pulse">
+                    {historicalProgress.current.toLocaleString()} แท่งเทียน...
+                  </span>
+                )}
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+
+        {/* ═══ DISCORD + REALTIME CONFIG ═══ */}
+        <Card size="sm" className="border-indigo-500/30">
+          <CardHeader>
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <CardTitle className="text-indigo-400">Discord Webhook + Real-time Alerts</CardTitle>
+                <CardDescription>
+                  ตั้งค่า Webhook URL แล้วเปิดโหมด Realtime — ระบบจะดึงข้อมูลทุก N วินาที, ตรวจสัญญาณจากกลยุทธ์ที่เลือก, แล้วแจ้งเตือน BUY/SELL เข้า Discord
+                </CardDescription>
+              </div>
+              <Badge
+                variant="outline"
+                className={polling ? "text-emerald-500 border-emerald-500/40" : "text-muted-foreground"}
+              >
+                {polling ? "● กำลังทำงาน" : "○ ปิดอยู่"}
+              </Badge>
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            {/* Webhook URL */}
+            <div className="grid grid-cols-1 md:grid-cols-[1fr_auto_auto] gap-2 items-end">
+              <Field label="Discord Webhook URL">
+                <Input
+                  type="password"
+                  placeholder="https://discord.com/api/webhooks/..."
+                  value={webhookUrl}
+                  onChange={e => setWebhookUrl(e.target.value)}
+                  disabled={useEnvWebhook}
+                  autoComplete="off"
+                />
+              </Field>
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-9"
+                onClick={testWebhook}
+                disabled={testingWebhook || (!useEnvWebhook && !webhookUrl.trim())}
+              >
+                {testingWebhook ? "กำลังทดสอบ..." : "ทดสอบ Webhook"}
+              </Button>
+              <Button
+                variant={useEnvWebhook ? "default" : "outline"}
+                size="sm"
+                className="h-9"
+                onClick={() => setUseEnvWebhook(v => !v)}
+              >
+                {useEnvWebhook ? "● ใช้ env" : "○ ใช้ URL ด้านบน"}
+              </Button>
+            </div>
+            <p className="text-[10px] text-muted-foreground">
+              {useEnvWebhook
+                ? "กำลังใช้ env DISCORD_WEBHOOK_URL จากฝั่งเซิร์ฟเวอร์ (ตั้งใน .env.local)"
+                : "URL ถูกเก็บใน localStorage ของเบราว์เซอร์เท่านั้น — ไม่ส่งออกนอกจากตอนยิงเข้า /api/discord/notify"}
+            </p>
+
+            <Separator />
+
+            {/* Polling controls */}
+            <div className="flex flex-wrap items-end gap-3">
+              <Field label="Polling ทุก">
+                <Select value={String(pollSeconds)} onValueChange={v => { if (v) setPollSeconds(parseInt(v, 10) || 30); }}>
+                  <SelectTrigger className="w-32"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    {POLL_OPTIONS.map(o => (
+                      <SelectItem key={o.value} value={String(o.value)}>{o.label}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </Field>
+
+              <Field label="แจ้งเตือน Discord">
+                <Button
+                  variant={alertsEnabled ? "default" : "outline"}
+                  size="sm"
+                  className="h-9"
+                  onClick={() => setAlertsEnabled(v => !v)}
+                >
+                  {alertsEnabled ? "● เปิด" : "○ ปิด"}
+                </Button>
+              </Field>
+
+              <Field label="กลยุทธ์ (Indicator)">
+                <Select
+                  value={strategyId}
+                  onValueChange={(v) => {
+                    if (!v) return;
+                    const next = v as StrategyId;
+                    const strat = STRATEGIES.find(s => s.id === next);
+                    if (!strat) return;
+                    setStrategyId(next);
+                    setStrategyParams({ ...strat.params });
+                    setBtResult(null);
+                  }}
+                >
+                  <SelectTrigger className="w-56"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectGroup>
+                      <SelectLabel>เลือก Indicator / กลยุทธ์</SelectLabel>
+                      {STRATEGIES.map(s => (
+                        <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>
+                      ))}
+                    </SelectGroup>
+                  </SelectContent>
+                </Select>
+              </Field>
+
+              <Button
+                onClick={togglePolling}
+                disabled={loading}
+                className={`h-9 ${polling ? "bg-red-500 hover:bg-red-600" : "bg-emerald-500 hover:bg-emerald-600"}`}
+              >
+                {polling ? "■ หยุดเรียลไทม์" : "▶ เริ่มดึงข้อมูลเรียลไทม์"}
+              </Button>
+
+              {lastPolledAt && polling && (
+                <span className="text-[24px] text-muted-foreground">
+                  อัพเดทล่าสุด: {lastPolledAt.toLocaleTimeString()}
+                </span>
+              )}
+            </div>
+
+            <div className="rounded border border-amber-500/20 bg-amber-500/5 p-2 text-[10px] text-amber-500/80">
+              <p className="font-medium">วิธีทำงาน:</p>
+              <p>1. ระบบจะ poll /api/klines ทุก N วินาที → merge แท่งล่าสุดเข้ากับข้อมูลที่มี</p>
+              <p>2. รัน Backtest engine บนข้อมูลล่าสุด → ตรวจสัญญาณที่ &quot;แท่งปิดล่าสุด&quot; (ไม่ใช้แท่งที่กำลังก่อตัว)</p>
+              <p>3. ถ้าเป็น BUY/SELL และยังไม่เคยส่งสำหรับแท่งนั้น → ยิง embed เข้า Discord webhook (deduplicate ด้วย openTime)</p>
+            </div>
+
+            <DiscordHelpPanel />
+          </CardContent>
+        </Card>
+
+        {/* ═══ ALERTS LOG ═══ */}
+        {alerts.length > 0 && (
+          <Card size="sm">
+            <CardHeader className="border-b">
+              <div className="flex items-center justify-between">
+                <div>
+                  <CardTitle>ประวัติการแจ้งเตือน Discord</CardTitle>
+                  <CardDescription>{alerts.length} รายการล่าสุด (เก็บใน memory)</CardDescription>
+                </div>
+                <Button variant="outline" size="sm" onClick={() => setAlerts([])}>ล้างประวัติ</Button>
+              </div>
+            </CardHeader>
+            <CardContent className="p-0">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>เวลาส่ง</TableHead>
+                    <TableHead>คู่เหรียญ</TableHead>
+                    <TableHead>TF</TableHead>
+                    <TableHead>กลยุทธ์</TableHead>
+                    <TableHead className="text-center">สัญญาณ</TableHead>
+                    <TableHead className="text-right">ราคา</TableHead>
+                    <TableHead>เวลาแท่ง</TableHead>
+                    <TableHead>สถานะ</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {alerts.map(a => (
+                    <TableRow key={a.id} className={a.action === "BUY" ? "bg-emerald-500/[0.04]" : "bg-red-500/[0.04]"}>
+                      <TableCell className="text-muted-foreground tabular-nums text-[10px]">{new Date(a.time).toLocaleTimeString()}</TableCell>
+                      <TableCell className="font-medium">{a.symbol}</TableCell>
+                      <TableCell className="text-muted-foreground">{a.interval}</TableCell>
+                      <TableCell className="text-[10px]">{a.strategyName}</TableCell>
+                      <TableCell className="text-center">
+                        <Badge variant="outline" className={a.action === "BUY" ? "text-emerald-500 border-emerald-500/30" : "text-red-500 border-red-500/30"}>
+                          {a.action}
+                        </Badge>
+                      </TableCell>
+                      <TableCell className="text-right tabular-nums">{fmtPrice(a.price)}</TableCell>
+                      <TableCell className="text-muted-foreground text-[10px]">{fmtFullDate(a.barOpenTime)}</TableCell>
+                      <TableCell>
+                        {a.status === "ok"
+                          ? <Badge variant="outline" className="text-emerald-500 border-emerald-500/30">ส่งสำเร็จ</Badge>
+                          : <Badge variant="outline" className="text-red-500 border-red-500/30" title={a.message}>ผิดพลาด</Badge>}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </CardContent>
+          </Card>
+        )}
+
+        {/* Error */}
+        {error && <ErrorCard message={error} />}
+
+        {/* Price Chart */}
+        {klines.length > 0 && (
+          <KlineGraph
+            klines={klines}
+            indicators={indicators}
+            btResult={btResult}
+            strategyId={strategyId}
+          />
+        )}
+
+        {/* ═══ BACKTEST All Indicator and Strategy ═══ */}
+        {klines.length > 0 && (
+          <Card size="sm">
+            <CardHeader className="border-b">
+              <div className="flex items-center justify-between">
+                <div>
+                  <CardTitle>ทดสอบกลยุทธ์ย้อนหลัง ทุก Indicator</CardTitle>
+                  <CardDescription>รันทุกกลยุทธ์ ({STRATEGIES.length} ตัว) บนข้อมูล {klines.length.toLocaleString()} แท่งเทียน — เรียงตามกำไรสูงสุด</CardDescription>
+                </div>
+                <Button onClick={runAllBt} disabled={allBtRunning || klines.length < 50} className="h-9 shrink-0">
+                  {allBtRunning ? "กำลังรัน..." : "รัน Backtest ทั้งหมด"}
+                </Button>
+              </div>
+            </CardHeader>
+            <CardContent className="pt-3">
+              {!allBtResults && !allBtRunning && (
+                <p className="text-xs text-muted-foreground text-center py-6">กดปุ่ม &quot;รัน Backtest ทั้งหมด&quot; เพื่อเปรียบเทียบทุกกลยุทธ์</p>
+              )}
+              {allBtRunning && (
+                <div className="space-y-2 py-4">
+                  {Array.from({ length: 4 }).map((_, i) => <Skeleton key={i} className="h-8 w-full" />)}
+                </div>
+              )}
+              {allBtResults && (
+                <div className="space-y-2">
+                  <div className="rounded-md border">
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead className="w-8 text-center">#</TableHead>
+                          <TableHead>กลยุทธ์</TableHead>
+                          <TableHead className="text-right">กำไร/ขาดทุน</TableHead>
+                          <TableHead className="text-right">อัตราชนะ</TableHead>
+                          <TableHead className="text-right">จำนวนเทรด</TableHead>
+                          <TableHead className="text-right">Drawdown</TableHead>
+                          <TableHead className="text-right">Profit Factor</TableHead>
+                          <TableHead className="text-right">Sharpe</TableHead>
+                          <TableHead className="text-right">vs ซื้อถือ</TableHead>
+                          <TableHead className="w-10"></TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {allBtResults.map((item, idx) => {
+                          const r = item.result;
+                          const isExpanded = allBtExpanded.has(item.strategyId);
+                          const diff = r.totalPnlPct - r.buyAndHoldPct;
+                          return (
+                            <React.Fragment key={item.strategyId}>
+                              <TableRow
+                                className="cursor-pointer hover:bg-muted/50"
+                                onClick={() => setAllBtExpanded(prev => {
+                                  const next = new Set(prev);
+                                  if (next.has(item.strategyId)) next.delete(item.strategyId);
+                                  else next.add(item.strategyId);
+                                  return next;
+                                })}
+                              >
+                                <TableCell className="text-center text-muted-foreground text-xs">{idx + 1}</TableCell>
+                                <TableCell className="font-medium text-xs">{item.name}</TableCell>
+                                <TableCell className={`text-right tabular-nums font-semibold ${pnlColor(r.totalPnlPct)}`}>
+                                  {r.totalPnlPct >= 0 ? "+" : ""}{r.totalPnlPct.toFixed(2)}%
+                                </TableCell>
+                                <TableCell className={`text-right tabular-nums text-xs ${r.winRate >= 50 ? "text-emerald-500" : "text-red-500"}`}>
+                                  {r.winRate.toFixed(1)}%
+                                </TableCell>
+                                <TableCell className="text-right tabular-nums text-xs">
+                                  {r.totalTrades} <span className="text-muted-foreground">({r.wins}W/{r.losses}L)</span>
+                                </TableCell>
+                                <TableCell className="text-right tabular-nums text-xs text-red-500">
+                                  -{r.maxDrawdownPct.toFixed(2)}%
+                                </TableCell>
+                                <TableCell className={`text-right tabular-nums text-xs ${r.profitFactor > 1 ? "text-emerald-500" : "text-red-500"}`}>
+                                  {r.profitFactor === Infinity ? "INF" : r.profitFactor.toFixed(2)}
+                                </TableCell>
+                                <TableCell className={`text-right tabular-nums text-xs ${r.sharpeRatio > 0 ? "text-emerald-500" : "text-red-500"}`}>
+                                  {r.sharpeRatio.toFixed(3)}
+                                </TableCell>
+                                <TableCell className={`text-right tabular-nums text-xs font-medium ${diff >= 0 ? "text-emerald-500" : "text-red-500"}`}>
+                                  {diff >= 0 ? "+" : ""}{diff.toFixed(2)}%
+                                </TableCell>
+                                <TableCell className="text-center text-muted-foreground text-xs">
+                                  {isExpanded ? "▲" : "▼"}
+                                </TableCell>
+                              </TableRow>
+                              {isExpanded && (
+                                <TableRow>
+                                  <TableCell colSpan={10} className="p-0">
+                                    <div className="border-t bg-muted/20 px-4 py-3 space-y-3">
+                                      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                                        <StatCard label="กำไรเฉลี่ย" value={`+${r.avgWinPct.toFixed(2)}%`} color="text-emerald-500" size="sm" />
+                                        <StatCard label="ขาดทุนเฉลี่ย" value={`${r.avgLossPct.toFixed(2)}%`} color="text-red-500" size="sm" />
+                                        <StatCard label="เทรดที่ดีที่สุด" value={`+${r.bestTradePct.toFixed(2)}%`} color="text-emerald-500" size="sm" />
+                                        <StatCard label="เทรดที่แย่ที่สุด" value={`${r.worstTradePct.toFixed(2)}%`} color="text-red-500" size="sm" />
+                                      </div>
+                                      <div className="grid grid-cols-3 gap-2">
+                                        <StatCard label="แท่งเทียนถือเฉลี่ย" value={`${r.avgBarsHeld.toFixed(1)}`} size="sm" />
+                                        <StatCard label="ซื้อแล้วถือ" value={`${r.buyAndHoldPct >= 0 ? "+" : ""}${r.buyAndHoldPct.toFixed(2)}%`} color={pnlColor(r.buyAndHoldPct)} size="sm" />
+                                        <StatCard label={diff >= 0 ? "กลยุทธ์ชนะซื้อถือ" : "ซื้อถือชนะกลยุทธ์"} value={`${diff >= 0 ? "+" : ""}${diff.toFixed(2)}%`} color={diff >= 0 ? "text-emerald-500" : "text-red-500"} size="sm" />
+                                      </div>
+                                      <div className="flex flex-wrap gap-1">
+                                        {r.trades.map((t, i) => (
+                                          <span
+                                            key={i}
+                                            className={`inline-flex items-center rounded px-1.5 py-0.5 text-[9px] font-medium tabular-nums ${t.pnlPct >= 0 ? "bg-emerald-500/10 text-emerald-500" : "bg-red-500/10 text-red-500"}`}
+                                          >
+                                            #{i + 1} {t.pnlPct >= 0 ? "+" : ""}{t.pnlPct.toFixed(2)}%
+                                          </span>
+                                        ))}
+                                      </div>
+                                    </div>
+                                  </TableCell>
+                                </TableRow>
+                              )}
+                            </React.Fragment>
+                          );
+                        })}
+                      </TableBody>
+                    </Table>
+                  </div>
+
+                  {allBtResults.length >= 2 && (
+                    <div className="flex gap-3">
+                      <Card size="sm" className="flex-1 ring-emerald-500/20">
+                        <CardContent className="py-2.5">
+                          <p className="text-[10px] text-muted-foreground">กลยุทธ์ที่ดีที่สุด</p>
+                          <p className="text-sm font-semibold text-emerald-500">{allBtResults[0].name}</p>
+                          <p className="text-xs tabular-nums text-emerald-500">+{allBtResults[0].result.totalPnlPct.toFixed(2)}%</p>
+                        </CardContent>
+                      </Card>
+                      <Card size="sm" className="flex-1 ring-red-500/20">
+                        <CardContent className="py-2.5">
+                          <p className="text-[10px] text-muted-foreground">กลยุทธ์ที่แย่ที่สุด</p>
+                          <p className="text-sm font-semibold text-red-500">{allBtResults[allBtResults.length - 1].name}</p>
+                          <p className="text-xs tabular-nums text-red-500">{allBtResults[allBtResults.length - 1].result.totalPnlPct.toFixed(2)}%</p>
+                        </CardContent>
+                      </Card>
+                    </div>
+                  )}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        )}
+
+        {/* ═══ BACKTEST 1 : Indicator ═══ */}
+        {klines.length > 0 && (
+          <Card size="sm">
+            <CardHeader className="border-b">
+              <CardTitle>ทดสอบกลยุทธ์ย้อนหลัง กับ Indicator</CardTitle>
+              <CardDescription>เลือกกลยุทธ์ที่จะใช้สำหรับ Real-time Alerts + ปรับ Parameter + รัน Backtest บน {klines.length.toLocaleString()} แท่งเทียน</CardDescription>
+            </CardHeader>
+            <CardContent className="pt-2">
+              <div className="space-y-3">
+                <div>
+                  <p className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground mb-2">เลือกกลยุทธ์ (ใช้สำหรับ Real-time Alerts ด้วย)</p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {STRATEGIES.map(s => (
+                      <Button
+                        key={s.id}
+                        variant={strategyId === s.id ? "default" : "outline"}
+                        size="sm"
+                        className={`text-[11px] h-8 px-3 ${strategyId === s.id ? "" : "text-muted-foreground hover:text-foreground"}`}
+                        onClick={() => {
+                          setStrategyId(s.id);
+                          setStrategyParams({ ...s.params });
+                          setBtResult(null);
+                        }}
+                      >
+                        {s.name}
+                      </Button>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-3">
+                    <Field label="ค่าธรรมเนียม (%)">
+                      <Input type="number" step="0.01" value={feesPct} onChange={e => setFeesPct(e.target.value)} className="w-20" />
+                    </Field>
+                    <Button onClick={runBt} disabled={btRunning || klines.length < 50} className="h-9">
+                      {btRunning ? "กำลังรัน..." : "รัน Backtest"}
+                    </Button>
+                  </div>
+                  {btResult ? (
+                    <span className={`text-lg font-bold tabular-nums ${btResult.totalPnlPct >= 0 ? "text-emerald-500" : "text-red-500"}`}>
+                      กำไรรวม: {btResult.totalPnlPct >= 0 ? "+" : ""}{btResult.totalPnlPct.toFixed(2)}%
+                    </span>
+                  ) : (
+                    <span className="text-sm text-muted-foreground">กำไรรวม หลัง backtest : —</span>
+                  )}
+                </div>
+
+                {(() => {
+                  const strat = STRATEGIES.find(s => s.id === strategyId);
+                  if (!strat) return null;
+                  return (
+                    <div className="space-y-0.5">
+                      <p className="text-[10px] text-muted-foreground">{strat.descriptionEn}</p>
+                      <p className="text-[10px] text-muted-foreground">{strat.descriptionTh}</p>
+                    </div>
+                  );
+                })()}
+
+                {Object.keys(strategyParams).length > 0 && (
+                  <div className="flex flex-wrap items-end space-x-4">
+                    <p className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground w-full">ปรับค่าพารามิเตอร์</p>
+                    {Object.entries(strategyParams).map(([key, val]) => (
+                      <Field key={key} label={key}>
+                        <Input
+                          type="number"
+                          step={1}
+                          min={0}
+                          value={val}
+                          onChange={e => setStrategyParams(prev => ({ ...prev, [key]: parseFloat(e.target.value) || 0 }))}
+                          className="w-24"
+                        />
+                      </Field>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
+        {/* Backtest Results */}
+        {btResult && <BacktestResults result={btResult} />}
+
+        {/* Indicator Values */}
+        {indicators && klines.length > 0 && <IndicatorPanel indicators={indicators} klines={klines} />}
+
+        {/* Kline Table */}
+        <KlineTable klines={klines} loading={loading} signals={btResult?.signals} />
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Helpers
+// ═══════════════════════════════════════════════════════════════
+
+// Merge fresh klines into existing array — replaces overlapping bars (by openTime), appends new ones
+function mergeKlines(prev: KlineData[], fresh: KlineData[]): KlineData[] {
+  if (prev.length === 0) return fresh;
+  if (fresh.length === 0) return prev;
+
+  const map = new Map<number, KlineData>();
+  for (const k of prev) map.set(k.openTime, k);
+  for (const k of fresh) map.set(k.openTime, k); // fresh wins on overlap
+  return Array.from(map.values()).sort((a, b) => a.openTime - b.openTime);
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Sub-components
+// ═══════════════════════════════════════════════════════════════
+
+function Field({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="space-y-1">
+      <label className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">{label}</label>
+      {children}
+    </div>
+  );
+}
+
+// ─── Discord Help Panel ────────────────────────────────────────
+function DiscordHelpPanel() {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="rounded border border-indigo-500/20 bg-indigo-500/5">
+      <button
+        type="button"
+        onClick={() => setOpen(v => !v)}
+        className="w-full flex items-center justify-between px-3 py-2 text-[11px] font-medium text-indigo-400 hover:bg-indigo-500/10 transition-colors"
+      >
+        <span>📘 วิธีตั้งค่า Discord Webhook + ข้อจำกัด + API ที่ใช้</span>
+        <span className="text-[10px]">{open ? "▲ ซ่อน" : "▼ ขยาย"}</span>
+      </button>
+
+      {open && (
+        <div className="border-t border-indigo-500/20 px-3 py-3 space-y-3 text-[10px]">
+
+          {/* Section 1: Setup steps */}
+          <div className="space-y-1.5">
+            <p className="font-medium text-foreground/90 text-[11px]">ขั้นตอนสร้าง Discord Webhook</p>
+            <ol className="space-y-1 text-muted-foreground list-decimal list-inside">
+              <li>เปิด Discord เลือก server ที่ต้องการรับการแจ้งเตือน</li>
+              <li>คลิกขวาที่ <span className="text-foreground/80">channel</span> ที่ต้องการ → <span className="text-foreground/80">Edit Channel</span></li>
+              <li>เลือกแท็บ <span className="text-foreground/80">Integrations</span> → <span className="text-foreground/80">Webhooks</span></li>
+              <li>กด <span className="text-foreground/80">New Webhook</span> → ตั้งชื่อ + เลือกรูป + เลือก channel</li>
+              <li>กด <span className="text-emerald-500 font-medium">Copy Webhook URL</span></li>
+              <li>วาง URL ลงในช่อง &quot;Discord Webhook URL&quot; ด้านบน → กด <span className="text-foreground/80">ทดสอบ Webhook</span></li>
+              <li>เมื่อทดสอบสำเร็จ (เห็นข้อความใน Discord) → เลือก Polling interval + กลยุทธ์ → กด <span className="text-emerald-500 font-medium">▶ เริ่มดึงข้อมูลเรียลไทม์</span></li>
+            </ol>
+            <p className="text-[9px] text-muted-foreground/70 mt-1">
+              Path: Channel → ⚙ Edit Channel → Integrations → Webhooks → New Webhook → Copy Webhook URL
+            </p>
+          </div>
+
+          <Separator />
+
+          {/* Section 2: Rate limits */}
+          <div className="space-y-1.5">
+            <p className="font-medium text-foreground/90 text-[11px]">ข้อจำกัด (ฟรี แต่มี Rate Limit)</p>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              <div className="rounded border border-border/40 bg-background/50 p-2">
+                <p className="font-medium text-emerald-500">Webhook</p>
+                <p className="text-muted-foreground mt-0.5">
+                  <span className="text-foreground/80">~30 ข้อความ / 60 วินาที</span> ต่อ channel
+                </p>
+                <p className="text-muted-foreground/70 mt-0.5">เกินจะได้ HTTP 429 (rate limited) ชั่วคราว</p>
+              </div>
+              <div className="rounded border border-border/40 bg-background/50 p-2">
+                <p className="font-medium text-blue-400">Bot API</p>
+                <p className="text-muted-foreground mt-0.5">
+                  Rate limit ตาม endpoint (ปกติพอใช้)
+                </p>
+                <p className="text-muted-foreground/70 mt-0.5">ระบบนี้ใช้ Webhook อย่างเดียว ไม่กระทบ</p>
+              </div>
+            </div>
+            <div className="rounded border border-amber-500/20 bg-amber-500/5 p-2 text-[10px] text-amber-500/80 mt-1">
+              <p className="font-medium">คำแนะนำ Polling interval:</p>
+              <p>• ตั้ง interval ให้ &gt;= timeframe ของแท่งเทียน — เช่น TF = 1h ก็ poll ทุก 5-15 นาทีก็พอ ไม่ต้อง 5 วินาที</p>
+              <p>• ระบบมี deduplicate ด้วย openTime อยู่แล้ว — ไม่ส่งซ้ำสัญญาณเดียวกัน 2 ครั้ง</p>
+              <p>• Polling เร็วเกินไป = เปลือง API call ของ Binance (มี rate limit ของตัวเอง) แต่ไม่กระทบ Discord เพราะส่งเฉพาะตอนมีสัญญาณใหม่</p>
+            </div>
+          </div>
+
+          <Separator />
+
+          {/* Section 3: API ที่ระบบใช้ */}
+          <div className="space-y-1.5">
+            <p className="font-medium text-foreground/90 text-[11px]">API ที่ระบบใช้</p>
+            <div className="space-y-1.5">
+              <div className="rounded border border-border/40 bg-background/50 p-2 space-y-1">
+                <div className="flex items-center gap-2">
+                  <Badge variant="outline" className="text-[9px] text-emerald-500 border-emerald-500/30">POST</Badge>
+                  <code className="text-foreground/90 text-[10px]">/api/discord/notify</code>
+                </div>
+                <p className="text-muted-foreground">
+                  Server-side proxy → ส่ง payload เข้า Discord Webhook URL (รับจาก body หรือ <code className="text-foreground/70">process.env.DISCORD_WEBHOOK_URL</code>)
+                </p>
+                <p className="text-muted-foreground/80">
+                  Body: <code className="text-foreground/70">{`{ webhookUrl?, content?, username?, embeds? }`}</code>
+                </p>
+                <p className="text-muted-foreground/70 text-[9px]">
+                  ระบบ validate ว่า URL ขึ้นต้นด้วย <code>https://discord.com/api/webhooks/</code> เท่านั้น
+                </p>
+              </div>
+
+              <div className="rounded border border-border/40 bg-background/50 p-2 space-y-1">
+                <div className="flex items-center gap-2">
+                  <Badge variant="outline" className="text-[9px] text-blue-400 border-blue-400/30">GET</Badge>
+                  <code className="text-foreground/90 text-[10px]">/api/klines?symbol=...&interval=...&limit=...</code>
+                </div>
+                <p className="text-muted-foreground">
+                  ดึง Candlestick data จาก Binance — ระบบใช้ตอน polling ทุก N วินาที
+                </p>
+              </div>
+
+              <div className="rounded border border-border/40 bg-background/50 p-2 space-y-1">
+                <p className="font-medium text-foreground/80">📤 ตัวอย่าง Payload ที่ส่งเข้า Discord:</p>
+                <pre className="text-[9px] text-muted-foreground/90 bg-background/70 rounded p-1.5 overflow-x-auto">
+{`{
+  "username": "Crypto Signal Bot",
+  "embeds": [{
+    "title": "🟢 BUY Signal — BTCUSDT",
+    "description": "กลยุทธ์: RSI Overbought/Oversold\\nTimeframe: 1h",
+    "color": 1098907,
+    "fields": [
+      { "name": "ราคา", "value": "65432.10" },
+      { "name": "Open/High/Low", ... },
+      { "name": "Volume", ... },
+      { "name": "เวลาแท่ง", ... }
+    ],
+    "timestamp": "2026-05-20T..."
+  }]
+}`}
+                </pre>
+              </div>
+            </div>
+          </div>
+
+          <Separator />
+
+          {/* Section 4: Security notes */}
+          <div className="space-y-1.5">
+            <p className="font-medium text-foreground/90 text-[11px]">ความปลอดภัย</p>
+            <ul className="space-y-0.5 text-muted-foreground list-disc list-inside">
+              <li>Webhook URL = ตัวยืนยันตัวตน ใครได้ไปก็ส่งเข้า channel ได้ → <span className="text-red-400">อย่าแชร์ในที่สาธารณะ</span></li>
+              <li>ระบบเก็บ URL ใน <code className="text-foreground/70">localStorage</code> ของเบราว์เซอร์เท่านั้น — ไม่ส่งเข้าฐานข้อมูล</li>
+              <li>ทุก request ส่งผ่าน <code className="text-foreground/70">/api/discord/notify</code> ฝั่ง server เพื่อหลีกเลี่ยง CORS และไม่เปิดเผย URL ใน Network tab ของผู้อื่น</li>
+              <li>ถ้า URL หลุด → ไปที่ Discord channel → Integrations → Webhooks → กด <span className="text-red-400">Delete</span> แล้วสร้างใหม่</li>
+            </ul>
+          </div>
+
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ErrorCard({ message }: { message: string }) {
+  return (
+    <Card size="sm" className="border-destructive/30 bg-destructive/5">
+      <CardContent className="py-2 text-xs text-destructive">{message}</CardContent>
+    </Card>
+  );
+}
+
+function StatCard({ label, value, color = "", bg = "", size = "default" }: { label: string; value: string; color?: string; bg?: string; size?: string }) {
+  return (
+    <Card size="sm" className={bg}>
+      <CardContent className={size === "sm" ? "pt-2 pb-2" : "pt-3"}>
+        <p className="text-[10px] uppercase tracking-wider text-muted-foreground">{label}</p>
+        <p className={`${size === "sm" ? "text-xs" : "text-sm"} font-semibold tabular-nums ${color}`}>{value}</p>
+      </CardContent>
+    </Card>
+  );
+}
+
+// ─── Indicator Panel ───────────────────────────────────────────
+function IndicatorPanel({ indicators, klines }: { indicators: AllIndicators; klines: KlineData[] }) {
+  const last = klines.length - 1;
+
+  // Guard: when polling updates klines, indicators may be one render behind.
+  // Skip rendering if indicator arrays don't cover the latest bar.
+  if (last < 0 || indicators.rsi.length <= last) return null;
+
+  const c = +klines[last].close;
+
+  const rows: { name: string; value: string; signal: string; color: string }[] = [];
+
+  const rsiVal = indicators.rsi[last];
+  if (rsiVal != null) {
+    const sig = rsiVal < 30 ? "ขายมากเกินไป (ซื้อ)" : rsiVal > 70 ? "ซื้อมากเกินไป (ขาย)" : "ปกติ";
+    rows.push({ name: "RSI(14)", value: rsiVal.toFixed(2), signal: sig, color: rsiVal < 30 ? "text-emerald-500" : rsiVal > 70 ? "text-red-500" : "text-muted-foreground" });
+  }
+
+  const atrVal = indicators.atr[last];
+  if (atrVal != null) rows.push({ name: "ATR(14)", value: fmtPrice(atrVal), signal: `ความผันผวน ${((atrVal / c) * 100).toFixed(2)}%`, color: "text-muted-foreground" });
+
+  const obvVal = indicators.obv[last];
+  if (obvVal != null) {
+    const obvPrev = last > 0 ? (indicators.obv[last - 1] ?? obvVal) : obvVal;
+    rows.push({ name: "OBV", value: fmtNum(obvVal), signal: obvVal > obvPrev ? "เพิ่มขึ้น" : "ลดลง", color: obvVal > obvPrev ? "text-emerald-500" : "text-red-500" });
+  }
+
+  const vwapVal = indicators.vwap[last];
+  if (vwapVal != null) {
+    rows.push({ name: "VWAP", value: fmtPrice(vwapVal), signal: c > vwapVal ? "อยู่เหนือ (ขาขึ้น)" : "อยู่ใต้ (ขาลง)", color: c > vwapVal ? "text-emerald-500" : "text-red-500" });
+  }
+
+  const st = indicators.supertrend;
+  const stTrend = st.trend[last];
+  const stValue = st.supertrend[last];
+  if (stTrend != null && stValue != null) {
+    const isUp = stTrend === 1;
+    rows.push({
+      name: "Supertrend",
+      value: fmtPrice(stValue),
+      signal: isUp ? "Uptrend (ขาขึ้น)" : "Downtrend (ขาลง)",
+      color: isUp ? "text-emerald-500" : "text-red-500",
+    });
+  }
+
+  const ub = indicators.utBot;
+  const ubStop = ub.trailingStop[last];
+  const ubPos = ub.pos[last];
+  if (ubStop != null) {
+    rows.push({
+      name: "UT Bot",
+      value: fmtPrice(ubStop),
+      signal: ubPos === 1 ? "Long" : ubPos === -1 ? "Short" : "Neutral",
+      color: ubPos === 1 ? "text-emerald-500" : ubPos === -1 ? "text-red-500" : "text-muted-foreground",
+    });
+  }
+
+  return (
+    <Card size="sm">
+      <CardHeader className="border-b"><CardTitle>ค่าตัวชี้วัด (สรุป)</CardTitle></CardHeader>
+      <CardContent className="p-0">
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>ตัวชี้วัด</TableHead>
+              <TableHead>ค่า</TableHead>
+              <TableHead>สัญญาณ</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {rows.map(r => (
+              <TableRow key={r.name}>
+                <TableCell className="font-medium">{r.name}</TableCell>
+                <TableCell className="tabular-nums">{r.value}</TableCell>
+                <TableCell className={r.color}>{r.signal}</TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </CardContent>
+    </Card>
+  );
+}
+
+// ─── Backtest Results ──────────────────────────────────────────
+function BacktestResults({ result }: { result: BacktestResult }) {
+  const [tradePage, setTradePage] = useState(0);
+  const tradePageSize = 20;
+  const totalTradePages = Math.ceil(result.trades.length / tradePageSize);
+  const displayedTrades = result.trades.slice(tradePage * tradePageSize, (tradePage + 1) * tradePageSize);
+
+  const strategyBetter = result.totalPnlPct > result.buyAndHoldPct;
+
+  return (
+    <div className="space-y-4">
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        <StatCard label="กำไร/ขาดทุนรวม" value={`${result.totalPnlPct >= 0 ? "+" : ""}${result.totalPnlPct.toFixed(2)}%`} color={pnlColor(result.totalPnlPct)} bg={pnlBg(result.totalPnlPct)} />
+        <StatCard label="ซื้อแล้วถือ" value={`${result.buyAndHoldPct >= 0 ? "+" : ""}${result.buyAndHoldPct.toFixed(2)}%`} color={pnlColor(result.buyAndHoldPct)} bg={pnlBg(result.buyAndHoldPct)} />
+        <StatCard label="อัตราชนะ" value={`${result.winRate.toFixed(1)}%`} color={result.winRate >= 50 ? "text-emerald-500" : "text-red-500"} />
+        <StatCard label="จำนวนเทรด" value={`${result.totalTrades} (ชนะ:${result.wins} แพ้:${result.losses})`} />
+      </div>
+
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        <StatCard label="กำไรเฉลี่ย" value={`+${result.avgWinPct.toFixed(2)}%`} color="text-emerald-500" size="sm" />
+        <StatCard label="ขาดทุนเฉลี่ย" value={`${result.avgLossPct.toFixed(2)}%`} color="text-red-500" size="sm" />
+        <StatCard label="เทรดที่ดีที่สุด" value={`+${result.bestTradePct.toFixed(2)}%`} color="text-emerald-500" size="sm" />
+        <StatCard label="เทรดที่แย่ที่สุด" value={`${result.worstTradePct.toFixed(2)}%`} color="text-red-500" size="sm" />
+      </div>
+
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-3">
+        <StatCard label="Profit Factor" value={result.profitFactor === Infinity ? "INF" : result.profitFactor.toFixed(2)} color={result.profitFactor > 1 ? "text-emerald-500" : "text-red-500"} />
+        <StatCard label="Drawdown สูงสุด" value={`-${result.maxDrawdownPct.toFixed(2)}%`} color="text-red-500" size="sm" />
+        <StatCard label="Sharpe" value={result.sharpeRatio.toFixed(3)} color={result.sharpeRatio > 0 ? "text-emerald-500" : "text-red-500"} size="sm" />
+      </div>
+
+      <Card size="sm" className={strategyBetter ? "ring-emerald-500/30" : "ring-red-500/30"}>
+        <CardContent className="py-3">
+          <div className="flex items-center gap-3 text-xs">
+            <span className={`text-sm font-semibold ${strategyBetter ? "text-emerald-500" : "text-red-500"}`}>
+              {strategyBetter ? "กลยุทธ์ชนะ ซื้อแล้วถือ" : "ซื้อแล้วถือ ชนะกลยุทธ์"}
+            </span>
+            <span className="text-muted-foreground">
+              กลยุทธ์: {result.totalPnlPct >= 0 ? "+" : ""}{result.totalPnlPct.toFixed(2)}% vs ซื้อถือ: {result.buyAndHoldPct >= 0 ? "+" : ""}{result.buyAndHoldPct.toFixed(2)}%
+              (ต่าง {strategyBetter ? "+" : ""}{(result.totalPnlPct - result.buyAndHoldPct).toFixed(2)}%)
+            </span>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card size="sm">
+        <CardHeader className="border-b">
+          <div className="flex items-center justify-between">
+            <CardTitle>กราฟเงินทุน (กำไร/ขาดทุนสะสม %)</CardTitle>
+            <span className={`text-lg font-bold tabular-nums ${pnlColor(result.totalPnlPct)}`}>
+              กำไรรวม: {result.totalPnlPct >= 0 ? "+" : ""}{result.totalPnlPct.toFixed(2)}%
+            </span>
+          </div>
+        </CardHeader>
+        <CardContent className="pt-3">
+          <EquityChart curve={result.equityCurve} trades={result.trades} />
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            {result.trades.map((t, i) => (
+              <span
+                key={i}
+                className={`inline-flex items-center rounded px-1.5 py-0.5 text-[9px] font-medium tabular-nums ${t.pnlPct >= 0
+                  ? "bg-emerald-500/10 text-emerald-500"
+                  : "bg-red-500/10 text-red-500"
+                  }`}
+              >
+                #{i + 1} {t.pnlPct >= 0 ? "+" : ""}{t.pnlPct.toFixed(2)}%
+              </span>
+            ))}
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card size="sm">
+        <CardHeader className="border-b">
+          <CardTitle>ประวัติการเทรด</CardTitle>
+          <CardDescription>ทั้งหมด {result.trades.length} รายการ</CardDescription>
+          {totalTradePages > 1 && (
+            <CardAction>
+              <div className="flex items-center gap-1.5">
+                <Button variant="outline" size="xs" onClick={() => setTradePage(p => Math.max(0, p - 1))} disabled={tradePage === 0}>ก่อนหน้า</Button>
+                <span className="text-[10px] tabular-nums text-muted-foreground">{tradePage + 1}/{totalTradePages}</span>
+                <Button variant="outline" size="xs" onClick={() => setTradePage(p => Math.min(totalTradePages - 1, p + 1))} disabled={tradePage >= totalTradePages - 1}>ถัดไป</Button>
+              </div>
+            </CardAction>
+          )}
+        </CardHeader>
+        <CardContent className="p-0">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead className="w-8">#</TableHead>
+                <TableHead>เวลาเข้า</TableHead>
+                <TableHead className="text-right">ราคาเข้า</TableHead>
+                <TableHead>เวลาออก</TableHead>
+                <TableHead className="text-right">ราคาออก</TableHead>
+                <TableHead className="text-right">กำไร/ขาดทุน %</TableHead>
+                <TableHead className="text-right">แท่ง</TableHead>
+                <TableHead>เหตุผล</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {displayedTrades.map((t, i) => (
+                <TableRow key={i} className={t.pnlPct > 0 ? "bg-emerald-500/[0.03]" : t.pnlPct < 0 ? "bg-red-500/[0.03]" : ""}>
+                  <TableCell className="text-muted-foreground tabular-nums">{tradePage * tradePageSize + i + 1}</TableCell>
+                  <TableCell className="text-muted-foreground">{fmtDate(t.entryTime)}</TableCell>
+                  <TableCell className="text-right tabular-nums">{fmtPrice(t.entryPrice)}</TableCell>
+                  <TableCell className="text-muted-foreground">{fmtDate(t.exitTime)}</TableCell>
+                  <TableCell className="text-right tabular-nums">{fmtPrice(t.exitPrice)}</TableCell>
+                  <TableCell className={`text-right tabular-nums font-medium ${pnlColor(t.pnlPct)}`}>
+                    {t.pnlPct >= 0 ? "+" : ""}{t.pnlPct.toFixed(2)}%
+                  </TableCell>
+                  <TableCell className="text-right tabular-nums text-muted-foreground">{t.bars}</TableCell>
+                  <TableCell className="text-[10px] text-muted-foreground max-w-40 truncate">{t.reason}</TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+// ─── Kline Table ───────────────────────────────────────────────
+function KlineTable({ klines, loading, signals }: { klines: KlineData[]; loading: boolean; signals?: SignalAction[] }) {
+  const [page, setPage] = useState(0);
+  const pageSize = 50;
+  const totalPages = Math.ceil(klines.length / pageSize);
+  useEffect(() => { setPage(0); }, [klines]);
+
+  const reversed = useMemo(() => klines.slice().reverse(), [klines]);
+  const reversedSignals = useMemo(() => signals?.slice().reverse(), [signals]);
+  const displayed = reversed.slice(page * pageSize, (page + 1) * pageSize);
+  const displayedSigs = reversedSignals?.slice(page * pageSize, (page + 1) * pageSize);
+
+  if (loading && klines.length === 0) {
+    return (
+      <Card size="sm">
+        <CardContent className="space-y-2 py-4">
+          {Array.from({ length: 8 }).map((_, i) => <Skeleton key={i} className="h-6 w-full" />)}
+        </CardContent>
+      </Card>
+    );
+  }
+  if (klines.length === 0) {
+    return (
+      <Card size="sm">
+        <CardContent className="py-12 text-center text-xs text-muted-foreground">
+          ยังไม่มีข้อมูล — กดโหลดข้อมูลก่อน หรือเริ่มโหมด Real-time
+        </CardContent>
+      </Card>
+    );
+  }
+
+  return (
+    <Card size="sm">
+      <CardHeader className="border-b">
+        <CardTitle>ข้อมูลแท่งเทียน</CardTitle>
+        <CardDescription>{klines.length.toLocaleString()} แท่ง — {fmtFullDate(klines[0].openTime)} ถึง {fmtFullDate(klines[klines.length - 1].closeTime)}</CardDescription>
+        <CardAction>
+          <div className="flex items-center gap-1.5">
+            <Button variant="outline" size="xs" onClick={() => setPage(p => Math.max(0, p - 1))} disabled={page === 0}>ก่อนหน้า</Button>
+            <span className="text-[10px] tabular-nums text-muted-foreground">{page + 1}/{totalPages}</span>
+            <Button variant="outline" size="xs" onClick={() => setPage(p => Math.min(totalPages - 1, p + 1))} disabled={page >= totalPages - 1}>ถัดไป</Button>
+          </div>
+        </CardAction>
+      </CardHeader>
+      <CardContent className="p-0">
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead className="w-8">#</TableHead>
+              <TableHead>เวลาเปิด</TableHead>
+              <TableHead className="w-6"></TableHead>
+              <TableHead className="text-right">เปิด</TableHead>
+              <TableHead className="text-right">สูงสุด</TableHead>
+              <TableHead className="text-right">ต่ำสุด</TableHead>
+              <TableHead className="text-right">ปิด</TableHead>
+              <TableHead className="text-right">เปลี่ยนแปลง</TableHead>
+              <TableHead className="text-right">ปริมาณ</TableHead>
+              {signals && <TableHead className="text-center">สัญญาณ</TableHead>}
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {displayed.map((k, i) => {
+              const isUp = +k.close >= +k.open;
+              const pct = ((+k.close - +k.open) / +k.open) * 100;
+              const sig = displayedSigs?.[i];
+              return (
+                <TableRow key={k.openTime} className={sig === "BUY" ? "bg-emerald-500/[0.04]" : sig === "SELL" ? "bg-red-500/[0.04]" : ""}>
+                  <TableCell className="text-muted-foreground tabular-nums">{klines.length - (page * pageSize + i)}</TableCell>
+                  <TableCell className="text-muted-foreground">{fmtDate(k.openTime)}</TableCell>
+                  <TableCell><MiniCandle kline={k} /></TableCell>
+                  <TableCell className="text-right tabular-nums">{fmtPrice(k.open)}</TableCell>
+                  <TableCell className="text-right tabular-nums text-emerald-500/80">{fmtPrice(k.high)}</TableCell>
+                  <TableCell className="text-right tabular-nums text-red-500/80">{fmtPrice(k.low)}</TableCell>
+                  <TableCell className={`text-right tabular-nums font-medium ${isUp ? "text-emerald-500" : "text-red-500"}`}>{fmtPrice(k.close)}</TableCell>
+                  <TableCell className={`text-right tabular-nums ${pct >= 0 ? "text-emerald-500" : "text-red-500"}`}>{pct >= 0 ? "+" : ""}{pct.toFixed(2)}%</TableCell>
+                  <TableCell className="text-right tabular-nums text-muted-foreground">{fmtNum(k.volume)}</TableCell>
+                  {signals && (
+                    <TableCell className="text-center">
+                      {sig === "BUY" && <Badge variant="outline" className="text-[9px] text-emerald-500 border-emerald-500/30">BUY</Badge>}
+                      {sig === "SELL" && <Badge variant="outline" className="text-[9px] text-red-500 border-red-500/30">SELL</Badge>}
+                    </TableCell>
+                  )}
+                </TableRow>
+              );
+            })}
+          </TableBody>
+        </Table>
+      </CardContent>
+      {totalPages > 1 && (
+        <div className="flex items-center justify-between border-t px-4 py-2">
+          <span className="text-[10px] text-muted-foreground">
+            {page * pageSize + 1}-{Math.min((page + 1) * pageSize, klines.length)} of {klines.length.toLocaleString()}
+          </span>
+          <div className="flex gap-1">
+            <Button variant="outline" size="xs" onClick={() => setPage(0)} disabled={page === 0}>แรก</Button>
+            <Button variant="outline" size="xs" onClick={() => setPage(p => Math.max(0, p - 1))} disabled={page === 0}>ก่อนหน้า</Button>
+            <Button variant="outline" size="xs" onClick={() => setPage(p => Math.min(totalPages - 1, p + 1))} disabled={page >= totalPages - 1}>ถัดไป</Button>
+            <Button variant="outline" size="xs" onClick={() => setPage(totalPages - 1)} disabled={page >= totalPages - 1}>สุดท้าย</Button>
+          </div>
+        </div>
+      )}
+    </Card>
+  );
+}
