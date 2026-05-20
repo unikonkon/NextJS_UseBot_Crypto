@@ -178,6 +178,10 @@ interface DiscordAlert {
   barOpenTime: number;
   status: "ok" | "error";
   message?: string;
+  // For SELL: reference to the previous BUY (price + bar openTime), and P&L %
+  entryPrice?: number;
+  entryTime?: number;
+  pnlPct?: number;
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -222,6 +226,7 @@ export default function DiscordBotPage() {
   const [alerts, setAlerts] = useState<DiscordAlert[]>([]);
   const [testingWebhook, setTestingWebhook] = useState(false);
   const lastAlertBarRef = useRef<number>(0);
+  const lastBuyRef = useRef<{ price: number; time: number } | null>(null);
   const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pollSecondsRef = useRef(pollSeconds);
   const pollStateRef = useRef<{
@@ -384,8 +389,42 @@ export default function DiscordBotPage() {
     const { action, bar, strategyName, sym, intv, hookUrl } = params;
     const price = +bar.close;
     const isBuy = action === "BUY";
-    const color = isBuy ? 0x10b981 : 0xef4444;
     const emoji = isBuy ? "🟢" : "🔴";
+
+    // For SELL: pull previous BUY reference and compute P&L %
+    const prevBuy = !isBuy ? lastBuyRef.current : null;
+    const entryPrice = prevBuy?.price;
+    const entryTime = prevBuy?.time;
+    const pnlPct = entryPrice != null ? ((price - entryPrice) / entryPrice) * 100 : undefined;
+
+    // Embed color: BUY=green, SELL=amber if profit / red if loss / red if no ref
+    let color: number;
+    if (isBuy) color = 0x10b981;
+    else if (pnlPct != null && pnlPct >= 0) color = 0xf59e0b; // amber (profit)
+    else color = 0xef4444; // red (loss or no reference)
+
+    const fields: { name: string; value: string; inline?: boolean }[] = [
+      { name: "ราคา", value: fmtPrice(price), inline: true },
+      { name: "Open", value: fmtPrice(bar.open), inline: true },
+      { name: "High", value: fmtPrice(bar.high), inline: true },
+      { name: "Low", value: fmtPrice(bar.low), inline: true },
+      { name: "Volume", value: fmtNum(bar.volume), inline: true },
+      { name: "เวลาแท่ง", value: fmtFullDate(bar.openTime), inline: false },
+    ];
+
+    // For SELL: append BUY reference + P&L block
+    if (!isBuy) {
+      const pnlStr = pnlPct != null
+        ? `${pnlPct >= 0 ? "+" : ""}${pnlPct.toFixed(2)}%`
+        : "-";
+      const pnlEmoji = pnlPct == null ? "⚪" : pnlPct >= 0 ? "🟢" : "🔴";
+      fields.push(
+        { name: "─── อ้างอิงราคา BUY ก่อนหน้า ───", value: "​", inline: false },
+        { name: "🟢 ราคา BUY", value: entryPrice != null ? fmtPrice(entryPrice) : "-", inline: true },
+        { name: "🕒 เวลา BUY", value: entryTime != null ? fmtFullDate(entryTime) : "-", inline: true },
+        { name: `${pnlEmoji} กำไร/ขาดทุน`, value: pnlStr, inline: true },
+      );
+    }
 
     const result = await sendDiscord({
       username: "Crypto Signal Bot",
@@ -394,18 +433,18 @@ export default function DiscordBotPage() {
         title: `${emoji} ${action} Signal — ${sym}`,
         description: `**กลยุทธ์:** ${strategyName}\n**Timeframe:** ${intv}`,
         color,
-        fields: [
-          { name: "ราคา", value: fmtPrice(price), inline: true },
-          { name: "Open", value: fmtPrice(bar.open), inline: true },
-          { name: "High", value: fmtPrice(bar.high), inline: true },
-          { name: "Low", value: fmtPrice(bar.low), inline: true },
-          { name: "Volume", value: fmtNum(bar.volume), inline: true },
-          { name: "เวลาแท่ง", value: fmtFullDate(bar.openTime), inline: false },
-        ],
+        fields,
         timestamp: new Date().toISOString(),
         footer: { text: `${sym} • ${intv} • Crypto Indicator Bot` },
       }],
     });
+
+    // Update lastBuyRef: store on BUY, clear on SELL (one-shot pairing)
+    if (isBuy) {
+      lastBuyRef.current = { price, time: bar.openTime };
+    } else {
+      lastBuyRef.current = null;
+    }
 
     const alert: DiscordAlert = {
       id: `${bar.openTime}-${action}-${Date.now()}`,
@@ -418,6 +457,9 @@ export default function DiscordBotPage() {
       barOpenTime: bar.openTime,
       status: result.ok ? "ok" : "error",
       message: result.message,
+      entryPrice,
+      entryTime,
+      pnlPct,
     };
     setAlerts(prev => [alert, ...prev].slice(0, 50));
   }, [sendDiscord, useEnvWebhook]);
@@ -564,6 +606,8 @@ export default function DiscordBotPage() {
     if (klines.length > 0) {
       lastAlertBarRef.current = klines[klines.length - 1].openTime;
     }
+    // Clear previous BUY reference — new polling session starts fresh
+    lastBuyRef.current = null;
     setPolling(true);
   }, [polling, useEnvWebhook, webhookUrl, alertsEnabled, klines]);
 
@@ -939,6 +983,8 @@ export default function DiscordBotPage() {
                     <TableHead>กลยุทธ์</TableHead>
                     <TableHead className="text-center">สัญญาณ</TableHead>
                     <TableHead className="text-right">ราคา</TableHead>
+                    <TableHead className="text-right">ราคา BUY ก่อนหน้า</TableHead>
+                    <TableHead className="text-right">กำไร/ขาดทุน</TableHead>
                     <TableHead>เวลาแท่ง</TableHead>
                     <TableHead>สถานะ</TableHead>
                   </TableRow>
@@ -956,6 +1002,22 @@ export default function DiscordBotPage() {
                         </Badge>
                       </TableCell>
                       <TableCell className="text-right tabular-nums">{fmtPrice(a.price)}</TableCell>
+                      <TableCell className="text-right tabular-nums">
+                        {a.action === "SELL"
+                          ? (a.entryPrice != null
+                              ? <span className="text-emerald-500/80">{fmtPrice(a.entryPrice)}</span>
+                              : <span className="text-muted-foreground">-</span>)
+                          : <span className="text-muted-foreground">—</span>}
+                      </TableCell>
+                      <TableCell className="text-right tabular-nums">
+                        {a.action === "SELL"
+                          ? (a.pnlPct != null
+                              ? <span className={`font-semibold ${a.pnlPct >= 0 ? "text-emerald-500" : "text-red-500"}`}>
+                                  {a.pnlPct >= 0 ? "+" : ""}{a.pnlPct.toFixed(2)}%
+                                </span>
+                              : <span className="text-muted-foreground">-</span>)
+                          : <span className="text-muted-foreground">—</span>}
+                      </TableCell>
                       <TableCell className="text-muted-foreground text-[10px]">{fmtFullDate(a.barOpenTime)}</TableCell>
                       <TableCell>
                         {a.status === "ok"
