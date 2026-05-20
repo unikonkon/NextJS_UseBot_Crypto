@@ -218,6 +218,7 @@ export default function DiscordBotPage() {
   const [pollSeconds, setPollSeconds] = useState(30);
   const [polling, setPolling] = useState(false);
   const [lastPolledAt, setLastPolledAt] = useState<Date | null>(null);
+  const [tickSeconds, setTickSeconds] = useState(0);
   const [alerts, setAlerts] = useState<DiscordAlert[]>([]);
   const [testingWebhook, setTestingWebhook] = useState(false);
   const lastAlertBarRef = useRef<number>(0);
@@ -501,6 +502,17 @@ export default function DiscordBotPage() {
     };
   }, [polling, pollTick]);
 
+  // ─── Tick counter (1s) — counts up while polling, resets on each poll ──
+  useEffect(() => {
+    if (!polling) {
+      setTickSeconds(0);
+      return;
+    }
+    setTickSeconds(0);
+    const id = window.setInterval(() => setTickSeconds(s => s + 1), 1000);
+    return () => window.clearInterval(id);
+  }, [polling, lastPolledAt]);
+
   // ─── Run single Backtest ───────────────────────────────────
   const runBt = useCallback(() => {
     if (klines.length < 50) { setError("ต้องมีอย่างน้อย 50 แท่งเทียนเพื่อรัน Backtest"); return; }
@@ -598,8 +610,13 @@ export default function DiscordBotPage() {
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-[1fr_650px]">
           <Card size="sm">
             <CardHeader>
-              <CardTitle>ตั้งค่า</CardTitle>
-              <CardDescription>เลือกคู่เหรียญและช่วงเวลา แล้วดึงข้อมูลแบบเรียลไทม์หรือย้อนหลัง</CardDescription>
+              <div className="flex items-center gap-3">
+                <StepBadge n={1} done={!!activeSymbol && !!interval} />
+                <div>
+                  <CardTitle>ตั้งค่า — เลือกคู่เหรียญและช่วงเวลา</CardTitle>
+                  <CardDescription>เลือกเหรียญและ Timeframe ที่ต้องการ — เริ่มที่นี่</CardDescription>
+                </div>
+              </div>
             </CardHeader>
             <CardContent className="space-y-4">
               <div className="flex flex-wrap gap-3 items-center">
@@ -634,7 +651,15 @@ export default function DiscordBotPage() {
 
           {/* Fetch Data */}
           <Card size="sm">
-            <CardHeader><CardTitle>ดึงข้อมูล</CardTitle></CardHeader>
+            <CardHeader>
+              <div className="flex items-center gap-3">
+                <StepBadge n={2} done={klines.length > 0} />
+                <div>
+                  <CardTitle>ดึงข้อมูลแท่งเทียน</CardTitle>
+                  <CardDescription>โหลด snapshot ครั้งเดียว หรือดึงย้อนหลัง — เป็นข้อมูลเริ่มต้นสำหรับ Indicator + Realtime</CardDescription>
+                </div>
+              </div>
+            </CardHeader>
             <CardContent className="space-y-4">
               <div className="space-y-2">
                 <div className="flex items-end gap-2 flex-wrap">
@@ -685,84 +710,85 @@ export default function DiscordBotPage() {
         <Card size="sm" className="border-indigo-500/30">
           <CardHeader>
             <div className="flex items-start justify-between gap-3">
-              <div>
-                <CardTitle className="text-indigo-400">Discord Webhook + Real-time Alerts</CardTitle>
-                <CardDescription>
-                  ตั้งค่า Webhook URL แล้วเปิดโหมด Realtime — ระบบจะดึงข้อมูลทุก N วินาที, ตรวจสัญญาณจากกลยุทธ์ที่เลือก, แล้วแจ้งเตือน BUY/SELL เข้า Discord
-                </CardDescription>
+              <div className="flex items-center gap-3">
+                <StepBadge n={3} done={polling} />
+                <div>
+                  <CardTitle className="text-indigo-400">Discord Webhook + Real-time Alerts</CardTitle>
+                  <CardDescription>
+                    ตั้งค่า Webhook → เลือก Indicator → กดเริ่ม Realtime — ระบบจะแจ้งเตือน BUY/SELL เข้า Discord อัตโนมัติ
+                  </CardDescription>
+                </div>
               </div>
               <Badge
                 variant="outline"
-                className={polling ? "text-emerald-500 border-emerald-500/40" : "text-muted-foreground"}
+                className={polling ? "text-emerald-500 border-emerald-500/40 animate-pulse" : "text-muted-foreground"}
               >
                 {polling ? "● กำลังทำงาน" : "○ ปิดอยู่"}
               </Badge>
             </div>
           </CardHeader>
+
           <CardContent className="space-y-4">
-            {/* Webhook URL */}
-            <div className="grid grid-cols-1 md:grid-cols-[1fr_auto_auto] gap-2 items-end">
-              <Field label="Discord Webhook URL">
-                <Input
-                  type="password"
-                  placeholder="https://discord.com/api/webhooks/..."
-                  value={webhookUrl}
-                  onChange={e => setWebhookUrl(e.target.value)}
-                  disabled={useEnvWebhook}
-                  autoComplete="off"
-                />
-              </Field>
-              <Button
-                variant="outline"
-                size="sm"
-                className="h-9"
-                onClick={testWebhook}
-                disabled={testingWebhook || (!useEnvWebhook && !webhookUrl.trim())}
-              >
-                {testingWebhook ? "กำลังทดสอบ..." : "ทดสอบ Webhook"}
-              </Button>
-              <Button
-                variant={useEnvWebhook ? "default" : "outline"}
-                size="sm"
-                className="h-9"
-                onClick={() => setUseEnvWebhook(v => !v)}
-              >
-                {useEnvWebhook ? "● ใช้ env" : "○ ใช้ URL ด้านบน"}
-              </Button>
-            </div>
-            <p className="text-[10px] text-muted-foreground">
-              {useEnvWebhook
-                ? "กำลังใช้ env DISCORD_WEBHOOK_URL จากฝั่งเซิร์ฟเวอร์ (ตั้งใน .env.local)"
-                : "URL ถูกเก็บใน localStorage ของเบราว์เซอร์เท่านั้น — ไม่ส่งออกนอกจากตอนยิงเข้า /api/discord/notify"}
-            </p>
 
-            <Separator />
+            {/* ─── 3.1 Webhook Settings ──────────────────────────── */}
+            <div className="rounded-md border border-border/50 bg-muted/20 p-3 space-y-3">
+              <div className="flex items-center gap-2">
+                <StepBadge n={3.1 as number} done={useEnvWebhook || !!webhookUrl.trim()} />
+                <p className="text-[12px] font-semibold text-foreground/90">🔗 Webhook Settings</p>
+                <span className="text-[10px] text-muted-foreground">— ตั้งค่า Webhook URL ของ Discord channel</span>
+              </div>
 
-            {/* Polling controls */}
-            <div className="flex flex-wrap items-end gap-3">
-              <Field label="Polling ทุก">
-                <Select value={String(pollSeconds)} onValueChange={v => { if (v) setPollSeconds(parseInt(v, 10) || 30); }}>
-                  <SelectTrigger className="w-32"><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    {POLL_OPTIONS.map(o => (
-                      <SelectItem key={o.value} value={String(o.value)}>{o.label}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </Field>
-
-              <Field label="แจ้งเตือน Discord">
+              <div className="grid grid-cols-1 md:grid-cols-[1fr_auto_auto] gap-2 items-end">
+                <Field label="Discord Webhook URL">
+                  <Input
+                    type="password"
+                    placeholder="https://discord.com/api/webhooks/..."
+                    value={webhookUrl}
+                    onChange={e => setWebhookUrl(e.target.value)}
+                    disabled={useEnvWebhook}
+                    autoComplete="off"
+                  />
+                </Field>
                 <Button
-                  variant={alertsEnabled ? "default" : "outline"}
+                  variant="outline"
                   size="sm"
                   className="h-9"
-                  onClick={() => setAlertsEnabled(v => !v)}
+                  onClick={testWebhook}
+                  disabled={testingWebhook || (!useEnvWebhook && !webhookUrl.trim())}
                 >
-                  {alertsEnabled ? "● เปิด" : "○ ปิด"}
+                  {testingWebhook ? "กำลังทดสอบ..." : "ทดสอบ Webhook"}
                 </Button>
-              </Field>
+                <Button
+                  variant={useEnvWebhook ? "default" : "outline"}
+                  size="sm"
+                  className="h-9"
+                  onClick={() => setUseEnvWebhook(v => !v)}
+                >
+                  {useEnvWebhook ? "● ใช้ env" : "○ ใช้ URL ด้านบน"}
+                </Button>
+              </div>
 
-              <Field label="กลยุทธ์ (Indicator)">
+              <p className="text-[10px] text-muted-foreground">
+                {useEnvWebhook
+                  ? "✓ ใช้ env DISCORD_WEBHOOK_URL จากฝั่งเซิร์ฟเวอร์ (ตั้งใน .env.local)"
+                  : "URL เก็บใน localStorage ของเบราว์เซอร์เท่านั้น — ไม่ส่งออกนอกจากตอนยิงเข้า /api/discord/notify"}
+              </p>
+            </div>
+
+            {/* ─── 3.2 Real-time Settings ─────────────────────────── */}
+            <div className="rounded-md border border-indigo-500/30 bg-indigo-500/5 p-4 space-y-4">
+              <div className="flex items-center gap-2">
+                <StepBadge n={3.2 as number} done={polling} />
+                <p className="text-[13px] font-semibold text-foreground/90">⚙️ Real-time Settings</p>
+                <span className="text-[10px] text-muted-foreground">— เลือกกลยุทธ์, รอบ Polling แล้วกดเริ่ม</span>
+              </div>
+
+              {/* Strategy row — full width, big */}
+              <div className="space-y-2">
+                <div className="flex items-center gap-2">
+                  <span className="text-[14px]">🎯</span>
+                  <label className="text-[12px] font-semibold text-foreground/90">กลยุทธ์ (Indicator) ที่ใช้สร้างสัญญาณ</label>
+                </div>
                 <Select
                   value={strategyId}
                   onValueChange={(v) => {
@@ -775,31 +801,109 @@ export default function DiscordBotPage() {
                     setBtResult(null);
                   }}
                 >
-                  <SelectTrigger className="w-56"><SelectValue /></SelectTrigger>
+                  <SelectTrigger className="w-full h-11 text-sm font-medium"><SelectValue /></SelectTrigger>
                   <SelectContent>
                     <SelectGroup>
-                      <SelectLabel>เลือก Indicator / กลยุทธ์</SelectLabel>
+                      <SelectLabel>เลือก Indicator / กลยุทธ์ ({STRATEGIES.length} ตัว)</SelectLabel>
                       {STRATEGIES.map(s => (
                         <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>
                       ))}
                     </SelectGroup>
                   </SelectContent>
                 </Select>
-              </Field>
+                {(() => {
+                  const strat = STRATEGIES.find(s => s.id === strategyId);
+                  if (!strat) return null;
+                  return (
+                    <p className="text-[10px] text-muted-foreground pl-1">
+                      💡 {strat.descriptionTh}
+                    </p>
+                  );
+                })()}
+              </div>
 
-              <Button
-                onClick={togglePolling}
-                disabled={loading}
-                className={`h-9 ${polling ? "bg-red-500 hover:bg-red-600" : "bg-emerald-500 hover:bg-emerald-600"}`}
-              >
-                {polling ? "■ หยุดเรียลไทม์" : "▶ เริ่มดึงข้อมูลเรียลไทม์"}
-              </Button>
+              {/* Polling + Alerts row — large controls in 2-col grid */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                {/* Polling card */}
+                <div className="rounded border border-border/40 bg-background/60 p-3 space-y-2">
+                  <div className="flex items-center gap-2">
+                    <span className="text-[14px]">⏱</span>
+                    <label className="text-[12px] font-semibold text-foreground/90">Polling ทุก ๆ</label>
+                  </div>
+                  <Select value={String(pollSeconds)} onValueChange={v => { if (v) setPollSeconds(parseInt(v, 10) || 30); }}>
+                    <SelectTrigger className="w-full h-10"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      {POLL_OPTIONS.map(o => (
+                        <SelectItem key={o.value} value={String(o.value)}>{o.label}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <p className="text-[9px] text-muted-foreground">
+                    ความถี่ที่ดึงข้อมูลใหม่จาก Binance — แนะนำ ≥ Timeframe (เช่น TF=1h ใช้ 5-15 นาที)
+                  </p>
+                </div>
 
-              {lastPolledAt && polling && (
-                <span className="text-[24px] text-muted-foreground">
-                  อัพเดทล่าสุด: {lastPolledAt.toLocaleTimeString()}
-                </span>
-              )}
+                {/* Alerts toggle card */}
+                <div className="rounded border border-border/40 bg-background/60 p-3 space-y-2">
+                  <div className="flex items-center gap-2">
+                    <span className="text-[14px]">🔔</span>
+                    <label className="text-[12px] font-semibold text-foreground/90">แจ้งเตือน Discord</label>
+                  </div>
+                  <Button
+                    variant={alertsEnabled ? "default" : "outline"}
+                    size="sm"
+                    className={`w-full h-10 ${alertsEnabled ? "bg-emerald-500/90 hover:bg-emerald-500 text-white" : ""}`}
+                    onClick={() => setAlertsEnabled(v => !v)}
+                  >
+                    {alertsEnabled ? "● เปิดการแจ้งเตือน" : "○ ปิดการแจ้งเตือน"}
+                  </Button>
+                  <p className="text-[9px] text-muted-foreground">
+                    {alertsEnabled
+                      ? "ระบบจะส่ง BUY/SELL เข้า Discord เมื่อพบสัญญาณใหม่"
+                      : "ระบบจะ poll ข้อมูลแต่ไม่ส่งแจ้งเตือน (เหมาะกับการทดสอบ)"}
+                  </p>
+                </div>
+              </div>
+
+              {/* Big Start/Stop button row */}
+              <div className="space-y-2">
+                <Button
+                  onClick={togglePolling}
+                  disabled={loading}
+                  className={`w-full h-12 text-sm font-bold ${polling ? "bg-red-500 hover:bg-red-600 text-white" : "bg-emerald-500 hover:bg-emerald-600 text-white"}`}
+                >
+                  {polling ? "■ หยุด Real-time" : "▶ เริ่มดึงข้อมูล Real-time"}
+                </Button>
+                {!polling && klines.length === 0 && (
+                  <p className="text-[20px] text-amber-500/80 text-center">
+                    💡 ควรกด &quot;โหลดข้อมูล&quot; (ขั้นที่ 2) ก่อนเพื่อให้มีข้อมูลเริ่มต้นสำหรับคำนวณ Indicator
+                  </p>
+                )}
+                {polling && lastPolledAt && (() => {
+                  const remaining = Math.max(0, pollSeconds - tickSeconds);
+                  const progressPct = Math.min(100, (tickSeconds / Math.max(1, pollSeconds)) * 100);
+                  return (
+                    <div className="space-y-1.5">
+                      <div className="flex items-center justify-center gap-3 text-[20px] text-emerald-500/90 font-medium">
+                        <span className="animate-pulse">●</span>
+                        <span>อัพเดทล่าสุด: {lastPolledAt.toLocaleTimeString()}</span>
+                        <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/10 px-2 py-0.5 text-[18px] tabular-nums border border-emerald-500/30">
+                          ⏱ {tickSeconds}s / {pollSeconds}s
+                        </span>
+                      </div>
+                      <div className="text-[11px] text-muted-foreground text-center tabular-nums">
+                        ดึงข้อมูลรอบถัดไปใน <span className="text-emerald-500 font-semibold">{remaining}</span> วินาที
+                      </div>
+                      <div className="h-1.5 w-full rounded-full bg-muted overflow-hidden">
+                        <div
+                          className="h-full bg-emerald-500 transition-all duration-1000 ease-linear"
+                          style={{ width: `${progressPct}%` }}
+                        />
+                      </div>
+                    </div>
+                  );
+                })()}
+              </div>
             </div>
 
             <div className="rounded border border-amber-500/20 bg-amber-500/5 p-2 text-[10px] text-amber-500/80">
@@ -1141,6 +1245,29 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
     <div className="space-y-1">
       <label className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">{label}</label>
       {children}
+    </div>
+  );
+}
+
+// ─── Step Badge (vertical stepper indicator) ──────────────────
+function StepBadge({ n, done, label }: { n: number; done: boolean; label?: string }) {
+  return (
+    <div className="inline-flex items-center gap-2">
+      <span
+        className={`inline-flex items-center justify-center w-7 h-7 rounded-full text-[12px] font-bold border-2 transition-colors ${
+          done
+            ? "bg-emerald-500/20 border-emerald-500 text-emerald-500"
+            : "bg-muted border-border text-muted-foreground"
+        }`}
+        title={done ? "ทำขั้นนี้แล้ว" : "ยังไม่ได้ทำ"}
+      >
+        {done ? "✓" : n}
+      </span>
+      {label && (
+        <span className={`text-[10px] font-medium ${done ? "text-emerald-500" : "text-muted-foreground"}`}>
+          {done ? "เสร็จแล้ว" : label}
+        </span>
+      )}
     </div>
   );
 }
