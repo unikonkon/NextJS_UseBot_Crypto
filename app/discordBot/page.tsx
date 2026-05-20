@@ -24,9 +24,27 @@ import { Badge } from "@/components/ui/badge";
 import { Table, TableHeader, TableBody, TableHead, TableRow, TableCell } from "@/components/ui/table";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Separator } from "@/components/ui/separator";
-import KlineGraph from "@/app/klines/ui/graph";
+import dynamic from "next/dynamic";
 import { ThemeToggle } from "@/components/theme-toggle";
 import Link from "next/link";
+
+// Lazy-load TradingView chart — only fetched when a chart is actually shown.
+// Avoids pulling lightweight-charts (~600KB) into the initial page bundle.
+const KlineGraph = dynamic(() => import("@/app/klines/ui/graph"), {
+  ssr: false,
+  loading: () => (
+    <div className="h-64 flex items-center justify-center text-xs text-muted-foreground border border-dashed rounded">
+      กำลังโหลดกราฟ...
+    </div>
+  ),
+});
+import {
+  addTrade,
+  getTradesByWatcher,
+  deleteTrade,
+  deleteAllByWatcher,
+  type TradeRecord,
+} from "@/lib/tradeHistoryDB";
 
 // ─── Constants ─────────────────────────────────────────────────
 const POPULAR_SYMBOLS = [
@@ -523,9 +541,9 @@ export default function DiscordBotPage() {
                   <WatcherRow
                     key={w.id}
                     config={w}
-                    onUpdate={(patch) => updateWatcher(w.id, patch)}
-                    onRemove={() => removeWatcher(w.id)}
-                    onPollingChange={(p) => setWatcherPolling(w.id, p)}
+                    onUpdate={updateWatcher}
+                    onRemove={removeWatcher}
+                    onPollingChange={setWatcherPolling}
                     onAlert={appendAlert}
                   />
                 ))}
@@ -542,6 +560,77 @@ export default function DiscordBotPage() {
             <DiscordHelpPanel />
           </CardContent>
         </Card>
+
+        {/* ═══ ALERTS LOG ═══ */}
+        {alerts.length > 0 && (
+          <Card size="sm">
+            <CardHeader className="border-b">
+              <div className="flex items-center justify-between">
+                <div>
+                  <CardTitle>ประวัติการแจ้งเตือน Discord</CardTitle>
+                  <CardDescription>{alerts.length} รายการล่าสุด (เก็บใน memory)</CardDescription>
+                </div>
+                <Button variant="outline" size="sm" onClick={() => setAlerts([])}>ล้างประวัติ</Button>
+              </div>
+            </CardHeader>
+            <CardContent className="p-0">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>เวลาส่ง</TableHead>
+                    <TableHead>คู่เหรียญ</TableHead>
+                    <TableHead>TF</TableHead>
+                    <TableHead>กลยุทธ์</TableHead>
+                    <TableHead className="text-center">สัญญาณ</TableHead>
+                    <TableHead className="text-right">ราคา</TableHead>
+                    <TableHead className="text-right">ราคา BUY ก่อนหน้า</TableHead>
+                    <TableHead className="text-right">กำไร/ขาดทุน</TableHead>
+                    <TableHead>เวลาแท่ง</TableHead>
+                    <TableHead>สถานะ</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {alerts.map(a => (
+                    <TableRow key={a.id} className={a.action === "BUY" ? "bg-emerald-500/[0.04]" : "bg-red-500/[0.04]"}>
+                      <TableCell className="text-muted-foreground tabular-nums text-[10px]">{new Date(a.time).toLocaleTimeString()}</TableCell>
+                      <TableCell className="font-medium">{a.symbol}</TableCell>
+                      <TableCell className="text-muted-foreground">{a.interval}</TableCell>
+                      <TableCell className="text-[10px]">{a.strategyName}</TableCell>
+                      <TableCell className="text-center">
+                        <Badge variant="outline" className={a.action === "BUY" ? "text-emerald-500 border-emerald-500/30" : "text-red-500 border-red-500/30"}>
+                          {a.action}
+                        </Badge>
+                      </TableCell>
+                      <TableCell className="text-right tabular-nums">{fmtPrice(a.price)}</TableCell>
+                      <TableCell className="text-right tabular-nums">
+                        {a.action === "SELL"
+                          ? (a.entryPrice != null
+                            ? <span className="text-emerald-500/80">{fmtPrice(a.entryPrice)}</span>
+                            : <span className="text-muted-foreground">-</span>)
+                          : <span className="text-muted-foreground">—</span>}
+                      </TableCell>
+                      <TableCell className="text-right tabular-nums">
+                        {a.action === "SELL"
+                          ? (a.pnlPct != null
+                            ? <span className={`font-semibold ${a.pnlPct >= 0 ? "text-emerald-500" : "text-red-500"}`}>
+                              {a.pnlPct >= 0 ? "+" : ""}{a.pnlPct.toFixed(2)}%
+                            </span>
+                            : <span className="text-muted-foreground">-</span>)
+                          : <span className="text-muted-foreground">—</span>}
+                      </TableCell>
+                      <TableCell className="text-muted-foreground text-[10px]">{fmtFullDate(a.barOpenTime)}</TableCell>
+                      <TableCell>
+                        {a.status === "ok"
+                          ? <Badge variant="outline" className="text-emerald-500 border-emerald-500/30">ส่งสำเร็จ</Badge>
+                          : <Badge variant="outline" className="text-red-500 border-red-500/30" title={a.message}>ผิดพลาด</Badge>}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </CardContent>
+          </Card>
+        )}
 
         {/* ═══ CONFIG ═══ */}
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-[1fr_650px]">
@@ -642,77 +731,6 @@ export default function DiscordBotPage() {
             </CardContent>
           </Card>
         </div>
-
-        {/* ═══ ALERTS LOG ═══ */}
-        {alerts.length > 0 && (
-          <Card size="sm">
-            <CardHeader className="border-b">
-              <div className="flex items-center justify-between">
-                <div>
-                  <CardTitle>ประวัติการแจ้งเตือน Discord</CardTitle>
-                  <CardDescription>{alerts.length} รายการล่าสุด (เก็บใน memory)</CardDescription>
-                </div>
-                <Button variant="outline" size="sm" onClick={() => setAlerts([])}>ล้างประวัติ</Button>
-              </div>
-            </CardHeader>
-            <CardContent className="p-0">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>เวลาส่ง</TableHead>
-                    <TableHead>คู่เหรียญ</TableHead>
-                    <TableHead>TF</TableHead>
-                    <TableHead>กลยุทธ์</TableHead>
-                    <TableHead className="text-center">สัญญาณ</TableHead>
-                    <TableHead className="text-right">ราคา</TableHead>
-                    <TableHead className="text-right">ราคา BUY ก่อนหน้า</TableHead>
-                    <TableHead className="text-right">กำไร/ขาดทุน</TableHead>
-                    <TableHead>เวลาแท่ง</TableHead>
-                    <TableHead>สถานะ</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {alerts.map(a => (
-                    <TableRow key={a.id} className={a.action === "BUY" ? "bg-emerald-500/[0.04]" : "bg-red-500/[0.04]"}>
-                      <TableCell className="text-muted-foreground tabular-nums text-[10px]">{new Date(a.time).toLocaleTimeString()}</TableCell>
-                      <TableCell className="font-medium">{a.symbol}</TableCell>
-                      <TableCell className="text-muted-foreground">{a.interval}</TableCell>
-                      <TableCell className="text-[10px]">{a.strategyName}</TableCell>
-                      <TableCell className="text-center">
-                        <Badge variant="outline" className={a.action === "BUY" ? "text-emerald-500 border-emerald-500/30" : "text-red-500 border-red-500/30"}>
-                          {a.action}
-                        </Badge>
-                      </TableCell>
-                      <TableCell className="text-right tabular-nums">{fmtPrice(a.price)}</TableCell>
-                      <TableCell className="text-right tabular-nums">
-                        {a.action === "SELL"
-                          ? (a.entryPrice != null
-                            ? <span className="text-emerald-500/80">{fmtPrice(a.entryPrice)}</span>
-                            : <span className="text-muted-foreground">-</span>)
-                          : <span className="text-muted-foreground">—</span>}
-                      </TableCell>
-                      <TableCell className="text-right tabular-nums">
-                        {a.action === "SELL"
-                          ? (a.pnlPct != null
-                            ? <span className={`font-semibold ${a.pnlPct >= 0 ? "text-emerald-500" : "text-red-500"}`}>
-                              {a.pnlPct >= 0 ? "+" : ""}{a.pnlPct.toFixed(2)}%
-                            </span>
-                            : <span className="text-muted-foreground">-</span>)
-                          : <span className="text-muted-foreground">—</span>}
-                      </TableCell>
-                      <TableCell className="text-muted-foreground text-[10px]">{fmtFullDate(a.barOpenTime)}</TableCell>
-                      <TableCell>
-                        {a.status === "ok"
-                          ? <Badge variant="outline" className="text-emerald-500 border-emerald-500/30">ส่งสำเร็จ</Badge>
-                          : <Badge variant="outline" className="text-red-500 border-red-500/30" title={a.message}>ผิดพลาด</Badge>}
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </CardContent>
-          </Card>
-        )}
 
         {/* Error */}
         {error && <ErrorCard message={error} />}
@@ -999,8 +1017,8 @@ function StepBadge({ n, done, label }: { n: number; done: boolean; label?: strin
     <div className="inline-flex items-center gap-2">
       <span
         className={`inline-flex items-center justify-center w-7 h-7 rounded-full text-[12px] font-bold border-2 transition-colors ${done
-            ? "bg-emerald-500/20 border-emerald-500 text-emerald-500"
-            : "bg-muted border-border text-muted-foreground"
+          ? "bg-emerald-500/20 border-emerald-500 text-emerald-500"
+          : "bg-muted border-border text-muted-foreground"
           }`}
         title={done ? "ทำขั้นนี้แล้ว" : "ยังไม่ได้ทำ"}
       >
@@ -1488,7 +1506,9 @@ function KlineTable({ klines, loading, signals }: { klines: KlineData[]; loading
 // ═══════════════════════════════════════════════════════════════
 
 // ─── Mini sparkline (last N close prices) ─────────────────────
-function MiniSparkline({ values, width = 100, height = 28 }: {
+const MiniSparkline = React.memo(MiniSparklineImpl);
+
+function MiniSparklineImpl({ values, width = 100, height = 28 }: {
   values: number[];
   width?: number;
   height?: number;
@@ -1603,13 +1623,29 @@ function RateLimitInfo({ watchers, pollingMap }: {
 }
 
 // ─── Watcher Row (one self-contained polling unit) ────────────
-function WatcherRow({ config, onUpdate, onRemove, onPollingChange, onAlert }: {
+// Stable callbacks accept (id, ...) so parent can pass the same ref to every row.
+// Wrapped in React.memo so untouched rows don't re-render when other rows change.
+const WatcherRow = React.memo(WatcherRowImpl);
+
+function WatcherRowImpl({
+  config,
+  onUpdate: onUpdateProp,
+  onRemove: onRemoveProp,
+  onPollingChange: onPollingChangeProp,
+  onAlert,
+}: {
   config: WatcherConfig;
-  onUpdate: (patch: Partial<WatcherConfig>) => void;
-  onRemove: () => void;
-  onPollingChange: (polling: boolean) => void;
+  onUpdate: (id: string, patch: Partial<WatcherConfig>) => void;
+  onRemove: (id: string) => void;
+  onPollingChange: (id: string, polling: boolean) => void;
   onAlert: (alert: DiscordAlert) => void;
 }) {
+  // Bind id-scoped wrappers so internal call sites can keep the old signature.
+  // These don't need to be stable refs (used only internally, never passed down).
+  const id = config.id;
+  const onUpdate = (patch: Partial<WatcherConfig>) => onUpdateProp(id, patch);
+  const onRemove = () => onRemoveProp(id);
+  const onPollingChange = (polling: boolean) => onPollingChangeProp(id, polling);
   const [klines, setKlines] = useState<KlineData[]>([]);
   const [polling, setPolling] = useState(false);
   const [lastPolledAt, setLastPolledAt] = useState<Date | null>(null);
@@ -1619,6 +1655,17 @@ function WatcherRow({ config, onUpdate, onRemove, onPollingChange, onAlert }: {
   const [testing, setTesting] = useState(false);
   const [testMsg, setTestMsg] = useState<string | null>(null);
   const [lastSignal, setLastSignal] = useState<"BUY" | "SELL" | null>(null);
+
+  // New: chart + history + backtest features
+  const [showLiveChart, setShowLiveChart] = useState(false);
+  const [histKlines, setHistKlines] = useState<KlineData[]>([]);
+  const [histLoading, setHistLoading] = useState(false);
+  const [histEnd, setHistEnd] = useState("");
+  const [tradeHistory, setTradeHistory] = useState<TradeRecord[]>([]);
+  const [tradeHistoryReloadKey, setTradeHistoryReloadKey] = useState(0);
+  const [btResult, setBtResult] = useState<BacktestResult | null>(null);
+  const [btRunning, setBtRunning] = useState(false);
+  const [showBacktest, setShowBacktest] = useState(false);
 
   const lastAlertBarRef = useRef<number>(0);
   const lastBuyRef = useRef<{ price: number; time: number } | null>(null);
@@ -1633,6 +1680,25 @@ function WatcherRow({ config, onUpdate, onRemove, onPollingChange, onAlert }: {
 
   const activeSymbol = (config.customSymbol.trim().toUpperCase()) || config.symbol;
   const sparkline = useMemo(() => klines.slice(-50).map(k => +k.close), [klines]);
+
+  // Compute indicators for the chart (only when live chart is visible to save CPU)
+  const liveIndicators = useMemo<AllIndicators | null>(() =>
+    showLiveChart && klines.length >= 15 ? computeAll(klines) : null,
+    [showLiveChart, klines]
+  );
+  const histIndicators = useMemo<AllIndicators | null>(() =>
+    expanded && histKlines.length >= 15 ? computeAll(histKlines) : null,
+    [expanded, histKlines]
+  );
+
+  // ─── Load trade history from IndexedDB ────────────────────
+  useEffect(() => {
+    let cancelled = false;
+    getTradesByWatcher(config.id)
+      .then((records) => { if (!cancelled) setTradeHistory(records); })
+      .catch(() => { /* ignore — IndexedDB unavailable */ });
+    return () => { cancelled = true; };
+  }, [config.id, tradeHistoryReloadKey]);
 
   // ─── Send Discord (per-watcher) ───────────────────────────
   const send = useCallback(async (payload: {
@@ -1726,6 +1792,24 @@ function WatcherRow({ config, onUpdate, onRemove, onPollingChange, onAlert }: {
 
     setLastSignal(action);
 
+    const tradeId = `${cfgRef.current.id}-${bar.openTime}-${action}`;
+    const tradeRecord: TradeRecord = {
+      id: tradeId,
+      watcherId: cfgRef.current.id,
+      time: Date.now(),
+      symbol: sym,
+      interval: intv,
+      strategyName,
+      action,
+      price,
+      barOpenTime: bar.openTime,
+      entryPrice,
+      entryTime,
+      pnlPct,
+      status: result.ok ? "ok" : "error",
+      message: result.message,
+    };
+
     onAlert({
       id: `${bar.openTime}-${action}-${Date.now()}`,
       time: Date.now(),
@@ -1741,6 +1825,11 @@ function WatcherRow({ config, onUpdate, onRemove, onPollingChange, onAlert }: {
       entryTime,
       pnlPct,
     });
+
+    // Persist to IndexedDB + refresh local view
+    addTrade(tradeRecord).then(() => {
+      setTradeHistoryReloadKey(k => k + 1);
+    }).catch(() => { /* ignore IDB errors */ });
   }, [send, onAlert]);
 
   // ─── Polling tick ─────────────────────────────────────────
@@ -1897,12 +1986,21 @@ function WatcherRow({ config, onUpdate, onRemove, onPollingChange, onAlert }: {
 
         {/* Actions */}
         <div className="ml-auto flex items-center gap-1.5">
+
           <Button
             size="sm"
             className={polling ? "bg-red-500 hover:bg-red-600 text-white" : "bg-emerald-500 hover:bg-emerald-600 text-white"}
             onClick={togglePolling}
           >
             {polling ? "■ หยุด" : "▶ เริ่ม"}
+          </Button>
+          <Button
+            size="sm"
+            variant={showLiveChart ? "default" : "outline"}
+            className={showLiveChart ? "bg-blue-500 hover:bg-blue-600 text-white" : "text-blue-500 border-blue-500/30 hover:bg-blue-500/10"}
+            onClick={() => setShowLiveChart(v => !v)}
+          >
+            {showLiveChart ? "▲ ปิดกราฟ" : "📊 ดูกราฟ"}
           </Button>
           <Button size="sm" variant="outline" onClick={() => setExpanded(v => !v)}>
             {expanded ? "▲ ย่อ" : "▼ แก้ไข"}
@@ -1916,6 +2014,31 @@ function WatcherRow({ config, onUpdate, onRemove, onPollingChange, onAlert }: {
       {error && (
         <div className="px-3 pb-2">
           <p className="text-[13px] text-red-500">{error}</p>
+        </div>
+      )}
+
+      {/* Inline live chart (toggled by 📊 ดูกราฟ) */}
+      {showLiveChart && (
+        <div className="border-t border-border/40 bg-background/30 p-3 space-y-2">
+          <div className="flex items-center justify-between text-[11px]">
+            <span className="font-medium text-foreground/90">
+              📊 กราฟ Live: {activeSymbol} ({config.interval})
+              {polling && <span className="text-emerald-500 ml-2 animate-pulse">● Realtime</span>}
+            </span>
+            <span className="text-muted-foreground">{klines.length} แท่ง</span>
+          </div>
+          {klines.length === 0 ? (
+            <p className="text-[11px] text-muted-foreground text-center py-6">
+              ยังไม่มีข้อมูล — กด ▶ เริ่ม เพื่อดึงข้อมูล หรือเปิด &quot;ดูกราฟจากการดึงข้อมูล&quot; ในแผงแก้ไข
+            </p>
+          ) : (
+            <KlineGraph
+              klines={klines}
+              indicators={liveIndicators}
+              btResult={btResult}
+              strategyId={config.strategyId}
+            />
+          )}
         </div>
       )}
 
@@ -2033,14 +2156,6 @@ function WatcherRow({ config, onUpdate, onRemove, onPollingChange, onAlert }: {
                 {config.alertsEnabled ? "● เปิด" : "○ ปิด"}
               </Button>
             </Field>
-            <Field label="จำนวนแท่งเทียน">
-              <Select value={String(config.klineLimit)} onValueChange={v => { if (v) onUpdate({ klineLimit: parseInt(v, 10) || 200 }); }}>
-                <SelectTrigger className="w-24"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  {[50, 100, 200, 500, 1000].map(n => <SelectItem key={n} value={String(n)}>{n}</SelectItem>)}
-                </SelectContent>
-              </Select>
-            </Field>
           </div>
 
           {lastPolledAt && (
@@ -2048,6 +2163,291 @@ function WatcherRow({ config, onUpdate, onRemove, onPollingChange, onAlert }: {
               อัพเดทล่าสุด: {lastPolledAt.toLocaleTimeString()} | klines โหลด: {klines.length}
             </p>
           )}
+
+          <Separator />
+
+          {/* ─── 📊 ดูกราฟจากการดึงข้อมูล (เลือกจำนวนแท่ง + end date) ─── */}
+          <div className="rounded-md border border-blue-500/20 bg-blue-500/5 p-3 space-y-2">
+            <p className="text-[12px] font-semibold text-blue-400">📊 ดูกราฟจากการดึงข้อมูล</p>
+            <p className="text-[10px] text-muted-foreground">
+              ดึงแท่งเทียน <span className="text-foreground/80">N แท่งล่าสุด</span> ย้อนหลังจาก &quot;วันที่ล่าสุด&quot; (ถ้าไม่ระบุ = ตอนนี้)
+            </p>
+            <div className="flex flex-wrap items-end gap-2">
+              <Field label="จำนวนแท่งเทียน (ล่าสุด)">
+                <Select value={String(config.klineLimit)} onValueChange={v => { if (v) onUpdate({ klineLimit: parseInt(v, 10) || 200 }); }}>
+                  <SelectTrigger className="w-28"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    {[50, 100, 200, 300, 400, 500, 700, 1000].map(n => <SelectItem key={n} value={String(n)}>{n} แท่ง</SelectItem>)}
+                  </SelectContent>
+                </Select>
+              </Field>
+              <Field label="วันที่ล่าสุด (optional)">
+                <Input type="datetime-local" value={histEnd} onChange={e => setHistEnd(e.target.value)} className="w-44" />
+              </Field>
+              <Button
+                size="sm"
+                disabled={histLoading}
+                onClick={async () => {
+                  setHistLoading(true);
+                  try {
+                    const limit = Math.max(50, Math.min(1000, config.klineLimit || 200));
+                    const params = new URLSearchParams({
+                      symbol: activeSymbol,
+                      interval: config.interval,
+                      limit: String(limit),
+                    });
+                    if (histEnd) {
+                      params.set("endTime", String(new Date(histEnd).getTime()));
+                    }
+                    const res = await fetch(`/api/klines?${params}`);
+                    if (!res.ok) {
+                      const b = await res.json().catch(() => ({}));
+                      throw new Error(b.error || `HTTP ${res.status}`);
+                    }
+                    const raw: BinanceKlineRaw[] = await res.json();
+                    setHistKlines(raw.map(parseKline));
+                  } catch (err) {
+                    setError(`โหลดข้อมูลย้อนหลังล้มเหลว: ${String(err)}`);
+                  } finally {
+                    setHistLoading(false);
+                  }
+                }}
+              >
+                {histLoading ? "กำลังดึง..." : "ดูกราฟ"}
+              </Button>
+              {histKlines.length > 0 && (
+                <Button size="sm" variant="outline" onClick={() => setHistKlines([])}>ล้างกราฟ</Button>
+              )}
+            </div>
+            {histKlines.length > 0 && (
+              <div className="space-y-1">
+                <p className="text-[10px] text-muted-foreground">
+                  {histKlines.length.toLocaleString()} แท่งเทียน — {new Date(histKlines[0].openTime).toLocaleString()} ถึง {new Date(histKlines[histKlines.length - 1].closeTime).toLocaleString()}
+                </p>
+                <KlineGraph
+                  klines={histKlines}
+                  indicators={histIndicators}
+                  btResult={btResult}
+                  strategyId={config.strategyId}
+                />
+              </div>
+            )}
+          </div>
+
+          {/* ─── 🧪 Backtest ─── */}
+          <div className="rounded-md border border-amber-500/20 bg-amber-500/5 p-3 space-y-2">
+            <div className="flex items-center justify-between">
+              <p className="text-[12px] font-semibold text-amber-500">🧪 Backtest กลยุทธ์</p>
+              <div className="flex gap-1.5">
+                <Button
+                  size="sm"
+                  disabled={btRunning || (klines.length < 50 && histKlines.length < 50)}
+                  onClick={() => {
+                    setBtRunning(true);
+                    setError(null);
+                    setTimeout(() => {
+                      try {
+                        // Prefer historical klines if loaded, else live klines
+                        const data = histKlines.length >= 50 ? histKlines : klines;
+                        const result = runBacktest(data, config.strategyId, config.strategyParams, 0.1);
+                        setBtResult(result);
+                        setShowBacktest(true);
+                      } catch (err) {
+                        setError(String(err));
+                      } finally {
+                        setBtRunning(false);
+                      }
+                    }, 10);
+                  }}
+                >
+                  {btRunning ? "กำลังรัน..." : "▶ รัน Backtest"}
+                </Button>
+                {btResult && (
+                  <Button size="sm" variant="outline" onClick={() => setShowBacktest(v => !v)}>
+                    {showBacktest ? "▲ ซ่อนผล" : "▼ ดูผล"}
+                  </Button>
+                )}
+                {btResult && (
+                  <Button size="sm" variant="outline" onClick={() => { setBtResult(null); setShowBacktest(false); }}>
+                    ล้าง
+                  </Button>
+                )}
+              </div>
+            </div>
+
+            <p className="text-[10px] text-muted-foreground">
+              ใช้ข้อมูล: {histKlines.length >= 50 ? `ย้อนหลัง ${histKlines.length} แท่ง` : `live ${klines.length} แท่ง`}
+              {" — "}
+              กลยุทธ์: <span className="font-medium">{STRATEGIES.find(s => s.id === config.strategyId)?.name ?? config.strategyId}</span>
+            </p>
+
+            {btResult && showBacktest && (
+              <div className="space-y-2 pt-1">
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-[11px]">
+                  <div className="rounded border border-border/40 bg-background/60 p-2">
+                    <p className="text-[9px] text-muted-foreground uppercase">กำไรรวม</p>
+                    <p className={`font-semibold tabular-nums ${btResult.totalPnlPct >= 0 ? "text-emerald-500" : "text-red-500"}`}>
+                      {btResult.totalPnlPct >= 0 ? "+" : ""}{btResult.totalPnlPct.toFixed(2)}%
+                    </p>
+                  </div>
+                  <div className="rounded border border-border/40 bg-background/60 p-2">
+                    <p className="text-[9px] text-muted-foreground uppercase">ซื้อแล้วถือ</p>
+                    <p className={`font-semibold tabular-nums ${btResult.buyAndHoldPct >= 0 ? "text-emerald-500" : "text-red-500"}`}>
+                      {btResult.buyAndHoldPct >= 0 ? "+" : ""}{btResult.buyAndHoldPct.toFixed(2)}%
+                    </p>
+                  </div>
+                  <div className="rounded border border-border/40 bg-background/60 p-2">
+                    <p className="text-[9px] text-muted-foreground uppercase">อัตราชนะ</p>
+                    <p className={`font-semibold tabular-nums ${btResult.winRate >= 50 ? "text-emerald-500" : "text-red-500"}`}>
+                      {btResult.winRate.toFixed(1)}%
+                    </p>
+                  </div>
+                  <div className="rounded border border-border/40 bg-background/60 p-2">
+                    <p className="text-[9px] text-muted-foreground uppercase">จำนวนเทรด</p>
+                    <p className="font-semibold tabular-nums">
+                      {btResult.totalTrades} ({btResult.wins}W/{btResult.losses}L)
+                    </p>
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-[10px]">
+                  <div className="rounded border border-border/40 bg-background/60 p-2">
+                    <p className="text-[9px] text-muted-foreground">Drawdown สูงสุด</p>
+                    <p className="text-red-500 tabular-nums">-{btResult.maxDrawdownPct.toFixed(2)}%</p>
+                  </div>
+                  <div className="rounded border border-border/40 bg-background/60 p-2">
+                    <p className="text-[9px] text-muted-foreground">Profit Factor</p>
+                    <p className={`tabular-nums ${btResult.profitFactor > 1 ? "text-emerald-500" : "text-red-500"}`}>
+                      {btResult.profitFactor === Infinity ? "INF" : btResult.profitFactor.toFixed(2)}
+                    </p>
+                  </div>
+                  <div className="rounded border border-border/40 bg-background/60 p-2">
+                    <p className="text-[9px] text-muted-foreground">Sharpe</p>
+                    <p className={`tabular-nums ${btResult.sharpeRatio > 0 ? "text-emerald-500" : "text-red-500"}`}>
+                      {btResult.sharpeRatio.toFixed(3)}
+                    </p>
+                  </div>
+                  <div className="rounded border border-border/40 bg-background/60 p-2">
+                    <p className="text-[9px] text-muted-foreground">กำไร/ขาดทุนเฉลี่ย</p>
+                    <p className="tabular-nums">
+                      <span className="text-emerald-500">+{btResult.avgWinPct.toFixed(2)}%</span>
+                      {" / "}
+                      <span className="text-red-500">{btResult.avgLossPct.toFixed(2)}%</span>
+                    </p>
+                  </div>
+                </div>
+                {btResult.trades.length > 0 && (
+                  <div className="flex flex-wrap gap-1">
+                    {btResult.trades.map((t, i) => (
+                      <span
+                        key={i}
+                        className={`inline-flex items-center rounded px-1.5 py-0.5 text-[9px] font-medium tabular-nums ${t.pnlPct >= 0 ? "bg-emerald-500/10 text-emerald-500" : "bg-red-500/10 text-red-500"}`}
+                        title={`Entry: ${new Date(t.entryTime).toLocaleString()} → Exit: ${new Date(t.exitTime).toLocaleString()}`}
+                      >
+                        #{i + 1} {t.pnlPct >= 0 ? "+" : ""}{t.pnlPct.toFixed(2)}%
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* ─── 📜 ประวัติการซื้อขาย (IndexedDB) ─── */}
+          <div className="rounded-md border border-purple-500/20 bg-purple-500/5 p-3 space-y-2">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-[12px] font-semibold text-purple-400">📜 ประวัติการซื้อขาย (Watcher นี้)</p>
+                <p className="text-[10px] text-muted-foreground">
+                  เก็บใน IndexedDB ของเบราว์เซอร์ • {tradeHistory.length} รายการ
+                </p>
+              </div>
+              {tradeHistory.length > 0 && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="text-red-500 border-red-500/30 hover:bg-red-500/10"
+                  onClick={async () => {
+                    if (!confirm(`ลบประวัติทั้งหมดของ ${activeSymbol} (${tradeHistory.length} รายการ)?`)) return;
+                    await deleteAllByWatcher(config.id).catch(() => { });
+                    setTradeHistoryReloadKey(k => k + 1);
+                  }}
+                >
+                  🗑 ลบทั้งหมด
+                </Button>
+              )}
+            </div>
+
+            {tradeHistory.length === 0 ? (
+              <p className="text-[11px] text-muted-foreground text-center py-3">
+                ยังไม่มีประวัติ — จะเริ่มบันทึกเมื่อ Watcher นี้ส่งสัญญาณ BUY/SELL เข้า Discord
+              </p>
+            ) : (
+              <div className="max-h-64 overflow-y-auto rounded border border-border/40">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead className="text-[10px]">เวลา</TableHead>
+                      <TableHead className="text-[10px] text-center">สัญญาณ</TableHead>
+                      <TableHead className="text-[10px] text-right">ราคา</TableHead>
+                      <TableHead className="text-[10px] text-right">ราคา BUY ก่อน</TableHead>
+                      <TableHead className="text-[10px] text-right">P&amp;L%</TableHead>
+                      <TableHead className="text-[10px]">สถานะ</TableHead>
+                      <TableHead className="text-[10px] w-8"></TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {tradeHistory.map(t => (
+                      <TableRow key={t.id} className={t.action === "BUY" ? "bg-emerald-500/[0.04]" : "bg-red-500/[0.04]"}>
+                        <TableCell className="text-[10px] text-muted-foreground tabular-nums">
+                          {new Date(t.time).toLocaleString()}
+                        </TableCell>
+                        <TableCell className="text-center">
+                          <Badge variant="outline" className={`text-[9px] ${t.action === "BUY" ? "text-emerald-500 border-emerald-500/30" : "text-red-500 border-red-500/30"}`}>
+                            {t.action}
+                          </Badge>
+                        </TableCell>
+                        <TableCell className="text-[10px] text-right tabular-nums">{t.price.toFixed(t.price >= 1 ? 4 : 6)}</TableCell>
+                        <TableCell className="text-[10px] text-right tabular-nums">
+                          {t.action === "SELL"
+                            ? (t.entryPrice != null ? <span className="text-emerald-500/80">{t.entryPrice.toFixed(t.entryPrice >= 1 ? 4 : 6)}</span> : <span className="text-muted-foreground">-</span>)
+                            : <span className="text-muted-foreground">—</span>}
+                        </TableCell>
+                        <TableCell className="text-[10px] text-right tabular-nums">
+                          {t.action === "SELL"
+                            ? (t.pnlPct != null
+                              ? <span className={`font-medium ${t.pnlPct >= 0 ? "text-emerald-500" : "text-red-500"}`}>
+                                {t.pnlPct >= 0 ? "+" : ""}{t.pnlPct.toFixed(2)}%
+                              </span>
+                              : <span className="text-muted-foreground">-</span>)
+                            : <span className="text-muted-foreground">—</span>}
+                        </TableCell>
+                        <TableCell className="text-[10px]">
+                          {t.status === "ok"
+                            ? <span className="text-emerald-500">✓</span>
+                            : <span className="text-red-500" title={t.message}>✗</span>}
+                        </TableCell>
+                        <TableCell>
+                          <Button
+                            size="xs"
+                            variant="outline"
+                            className="h-5 w-5 p-0 text-red-500 border-red-500/30 hover:bg-red-500/10"
+                            title="ลบรายการนี้"
+                            onClick={async () => {
+                              await deleteTrade(t.id).catch(() => { });
+                              setTradeHistoryReloadKey(k => k + 1);
+                            }}
+                          >
+                            ✕
+                          </Button>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            )}
+          </div>
+
         </div>
       )}
     </div>
