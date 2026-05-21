@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm i *)",
+      "Bash(node -e \"const y = require\\('yahoo-finance2'\\).default; y.chart\\('GC=F', { period1: new Date\\(Date.now\\(\\) - 7*86400000\\), interval: '1h' }\\).then\\(r => { console.log\\('quotes:', r.quotes?.length\\); console.log\\(JSON.stringify\\(r.quotes?.[0], null, 2\\)\\); }\\).catch\\(e => console.error\\('ERR', e.message\\)\\)\")",
+      "Bash(node -e \"const Y = require\\('yahoo-finance2'\\).default; const yf = new Y\\(\\); yf.chart\\('GC=F', { period1: new Date\\(Date.now\\(\\) - 7*86400000\\), interval: '1h' }\\).then\\(r => { console.log\\('quotes count:', r.quotes?.length\\); console.log\\('first:', JSON.stringify\\(r.quotes?.[0], null, 2\\)\\); console.log\\('last:', JSON.stringify\\(r.quotes?.[r.quotes.length-1], null, 2\\)\\); }\\).catch\\(e => console.error\\('ERR', e.message\\)\\)\")",
+      "Bash(node -e ' *)",
+      "Bash(npx eslint *)",
+      "Bash(npm run *)"
+    ]
+  }
+}

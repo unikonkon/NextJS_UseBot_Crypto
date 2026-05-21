@@ -504,6 +504,16 @@ export default function DiscordBotPage() {
                 >
                   {Object.values(pollingMap).filter(Boolean).length} / {watchers.length} active
                 </Badge>
+                <Link href="/discordBot/Gold">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="bg-amber-500/10 hover:bg-amber-500/20 text-amber-500 border-amber-500/40"
+                    title="ไปที่ Gold/Forex Bot (Yahoo + Dukascopy)"
+                  >
+                    🥇 XAU/USD →
+                  </Button>
+                </Link>
                 <Button
                   size="sm"
                   className="bg-indigo-500 hover:bg-indigo-600 text-white"
