@@ -1772,6 +1772,7 @@ function WatcherRowImpl({
   const [btResult, setBtResult] = useState<BacktestResult | null>(null);
   const [btRunning, setBtRunning] = useState(false);
   const [showBacktest, setShowBacktest] = useState(false);
+  const [showRemoveConfirm, setShowRemoveConfirm] = useState(false);
 
   const lastAlertBarRef = useRef<number>(0);
   const lastBuyRef = useRef<{ price: number; time: number } | null>(null);
@@ -2118,7 +2119,7 @@ function WatcherRowImpl({
           <Button size="sm" variant="outline" onClick={() => setExpanded(v => !v)}>
             {expanded ? "▲ ย่อ" : "▼ แก้ไข"}
           </Button>
-          <Button size="sm" variant="outline" className="text-red-500 border-red-500/30 hover:bg-red-500/10" onClick={onRemove}>
+          <Button size="sm" variant="outline" className="text-red-500 border-red-500/30 hover:bg-red-500/10" onClick={() => setShowRemoveConfirm(true)}>
             ✕
           </Button>
         </div>
@@ -2616,6 +2617,51 @@ function WatcherRowImpl({
             )}
           </div>
 
+        </div>
+      )}
+
+      {/* Confirm remove modal */}
+      {showRemoveConfirm && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4"
+          onClick={() => setShowRemoveConfirm(false)}
+        >
+          <div
+            className="w-full max-w-sm rounded-lg border border-red-500/30 bg-background shadow-xl"
+            onClick={e => e.stopPropagation()}
+          >
+            <div className="p-4 space-y-3">
+              <div className="flex items-center gap-2">
+                <span className="text-2xl">⚠️</span>
+                <h3 className="text-sm font-semibold">ยืนยันการลบ Watcher</h3>
+              </div>
+              <p className="text-[13px] text-muted-foreground">
+                คุณต้องการลบ Watcher <span className="font-semibold text-foreground">{activeSymbol}</span> (TF: {config.interval}) ใช่หรือไม่?
+              </p>
+              <p className="text-[11px] text-amber-500">
+                การลบนี้จะหยุดการ polling และนำ Watcher นี้ออกจากรายการ (ประวัติการเทรดใน IndexedDB จะยังอยู่)
+              </p>
+              <div className="flex justify-end gap-2 pt-1">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => setShowRemoveConfirm(false)}
+                >
+                  ยกเลิก
+                </Button>
+                <Button
+                  size="sm"
+                  className="bg-red-500 hover:bg-red-600 text-white"
+                  onClick={() => {
+                    setShowRemoveConfirm(false);
+                    onRemove();
+                  }}
+                >
+                  ✕ ลบ Watcher
+                </Button>
+              </div>
+            </div>
+          </div>
         </div>
       )}
     </div>
