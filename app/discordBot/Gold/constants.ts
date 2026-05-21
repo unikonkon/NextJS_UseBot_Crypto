@@ -75,3 +75,39 @@ export const GOLD_POLL_OPTIONS: { value: number; label: string }[] = [
   { value: 900,  label: "15 นาที" },
   { value: 3600, label: "1 ชั่วโมง" },
 ];
+
+// Duration of each live interval in seconds — used to derive valid polling intervals.
+export const TF_DURATION_S: Record<GoldLiveInterval, number> = {
+  "1m":  60,
+  "5m":  300,
+  "15m": 900,
+  "30m": 1800,
+  "1h":  3600,
+  "1d":  86400,
+};
+
+function fmtSeconds(sec: number): string {
+  if (sec < 60) return `${sec} วินาที`;
+  if (sec < 3600) return `${Math.round(sec / 60)} นาที`;
+  if (sec < 86400) return `${Math.round(sec / 3600)} ชั่วโมง`;
+  return `${Math.round(sec / 86400)} วัน`;
+}
+
+// Valid polling options for a given timeframe: poll = [1x, 2x, 4x] of TF duration.
+// Poll = TF means "check right after each new bar closes".
+// Larger multiples = lighter on rate limits but may miss intermediate bars.
+export function pollOptionsForInterval(interval: GoldLiveInterval): { value: number; label: string }[] {
+  const base = TF_DURATION_S[interval];
+  return [1, 2, 4].map(m => {
+    const sec = base * m;
+    return { value: sec, label: `${fmtSeconds(sec)}${m === 1 ? " (= TF)" : ` (${m}× TF)`}` };
+  });
+}
+
+// Default polling seconds for a given timeframe = TF duration (1× TF).
+export function defaultPollSecondsForInterval(interval: GoldLiveInterval): number {
+  return TF_DURATION_S[interval];
+}
+
+// Minimum bars needed before polling can start (matches the backtest engine threshold).
+export const MIN_BARS_FOR_POLLING = 50;

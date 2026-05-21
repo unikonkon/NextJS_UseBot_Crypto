@@ -8,7 +8,7 @@ import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { STRATEGIES, type StrategyId } from "@/lib/backtest";
-import { GOLD_SYMBOLS } from "./constants";
+import { GOLD_SYMBOLS, defaultPollSecondsForInterval } from "./constants";
 import GoldWatcherRow, { type GoldWatcherConfig } from "./GoldWatcherRow";
 import GoldBacktestPanel from "./GoldBacktestPanel";
 
@@ -16,13 +16,14 @@ const STORAGE_KEY = "discordBot.goldWatchers";
 
 function makeNewGoldWatcher(): GoldWatcherConfig {
   const rsi = STRATEGIES.find(s => s.id === "rsi")!;
+  const interval = "1h" as const;
   return {
     id: `gw-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
     symbol: GOLD_SYMBOLS[0].label,
-    interval: "1h",
+    interval,
     strategyId: "rsi" as StrategyId,
     strategyParams: { ...rsi.params },
-    pollSeconds: 300,
+    pollSeconds: defaultPollSecondsForInterval(interval),
     webhookUrl: "",
     useEnvWebhook: false,
     alertsEnabled: true,

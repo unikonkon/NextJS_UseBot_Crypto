@@ -1,12 +1,20 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import dynamic from "next/dynamic";
 import {
   type KlineData,
   type BinanceKlineRaw,
   parseKline,
 } from "@/lib/types/kline";
-import { runBacktest, STRATEGIES, type StrategyId } from "@/lib/backtest";
+import {
+  runBacktest,
+  STRATEGIES,
+  type StrategyId,
+  type BacktestResult,
+  type Trade,
+} from "@/lib/backtest";
+import { computeAll, type AllIndicators } from "@/lib/indicators";
 import {
   addGoldTrade,
   getGoldTradesByWatcher,
@@ -14,6 +22,16 @@ import {
   deleteGoldAllByWatcher,
   type GoldTradeRecord,
 } from "@/lib/goldTradeHistoryDB";
+
+// Lazy-load chart (~600KB) — only fetched when user opens the chart panel
+const KlineGraph = dynamic(() => import("@/app/klines/ui/graph"), {
+  ssr: false,
+  loading: () => (
+    <div className="h-64 flex items-center justify-center text-xs text-muted-foreground border border-dashed rounded">
+      กำลังโหลดกราฟ...
+    </div>
+  ),
+});
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem, SelectGroup, SelectLabel } from "@/components/ui/select";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -23,8 +41,10 @@ import {
   GOLD_SYMBOLS,
   findGoldSymbol,
   GOLD_LIVE_INTERVAL_GROUPS,
-  GOLD_POLL_OPTIONS,
   YAHOO_INTERVAL_LIMITS_HINT,
+  pollOptionsForInterval,
+  defaultPollSecondsForInterval,
+  MIN_BARS_FOR_POLLING,
   type GoldLiveInterval,
 } from "./constants";
 
@@ -62,7 +82,119 @@ function mergeKlines(prev: KlineData[], fresh: KlineData[]): KlineData[] {
   const map = new Map<number, KlineData>();
   for (const k of prev) map.set(k.openTime, k);
   for (const k of fresh) map.set(k.openTime, k);
-  return Array.from(map.values()).sort((a, b) => a.openTime - b.openTime).slice(-500);
+  return Array.from(map.values()).sort((a, b) => a.openTime - b.openTime).slice(-5000);
+}
+
+// Yahoo Finance practical per-interval max bars (free, no key).
+// Yahoo enforces interval-specific lookback windows: 1m → 7 days, 5m–30m → 60 days,
+// 1h → 730 days, 1d → unlimited. These caps stay within those limits.
+const YAHOO_MAX_LIMIT: Record<GoldLiveInterval, number> = {
+  "1m":  5000,
+  "5m":  5000,
+  "15m": 3000,
+  "30m": 2000,
+  "1h":  5000,
+  "1d":  5000,
+};
+
+// Convert persisted trade history → synthetic BacktestResult so KlineGraph
+// can draw BUY/SELL markers from real Discord-sent trades (not from a backtest).
+// Only `trades`, `totalPnlPct`, and `totalTrades` are read by KlineGraph.
+function tradeHistoryToBacktestResult(
+  history: GoldTradeRecord[],
+  klines: KlineData[],
+): BacktestResult | null {
+  if (history.length === 0 || klines.length === 0) return null;
+
+  const indexByOpenTime = new Map<number, number>();
+  klines.forEach((k, i) => indexByOpenTime.set(k.openTime, i));
+
+  const sorted = [...history].sort((a, b) => a.time - b.time);
+  const trades: Trade[] = [];
+  let openBuy: GoldTradeRecord | null = null;
+
+  for (const rec of sorted) {
+    if (rec.action === "BUY") {
+      if (openBuy) {
+        const entryIdx = indexByOpenTime.get(openBuy.barOpenTime);
+        if (entryIdx != null) {
+          trades.push({
+            entryIdx,
+            entryTime: openBuy.barOpenTime,
+            entryPrice: openBuy.price,
+            exitIdx: -1,
+            exitTime: 0,
+            exitPrice: 0,
+            pnl: 0,
+            pnlPct: 0,
+            bars: 0,
+            reason: "Open position (no SELL yet)",
+          });
+        }
+      }
+      openBuy = rec;
+    } else if (rec.action === "SELL" && openBuy) {
+      const entryIdx = indexByOpenTime.get(openBuy.barOpenTime);
+      const exitIdx = indexByOpenTime.get(rec.barOpenTime);
+      const pnlPct = rec.pnlPct ?? ((rec.price - openBuy.price) / openBuy.price) * 100;
+      if (exitIdx != null) {
+        trades.push({
+          entryIdx: entryIdx ?? -1,
+          entryTime: openBuy.barOpenTime,
+          entryPrice: openBuy.price,
+          exitIdx,
+          exitTime: rec.barOpenTime,
+          exitPrice: rec.price,
+          pnl: rec.price - openBuy.price,
+          pnlPct,
+          bars: entryIdx != null ? exitIdx - entryIdx : 0,
+          reason: rec.strategyName,
+        });
+      }
+      openBuy = null;
+    }
+  }
+
+  if (openBuy) {
+    const entryIdx = indexByOpenTime.get(openBuy.barOpenTime);
+    if (entryIdx != null) {
+      trades.push({
+        entryIdx,
+        entryTime: openBuy.barOpenTime,
+        entryPrice: openBuy.price,
+        exitIdx: -1,
+        exitTime: 0,
+        exitPrice: 0,
+        pnl: 0,
+        pnlPct: 0,
+        bars: 0,
+        reason: "Open position (no SELL yet)",
+      });
+    }
+  }
+
+  const closed = trades.filter(t => t.exitIdx >= 0);
+  const totalPnlPct = closed.reduce((s, t) => s + t.pnlPct, 0);
+
+  return {
+    trades,
+    totalPnlPct,
+    winRate: 0,
+    wins: 0,
+    losses: 0,
+    totalTrades: closed.length,
+    maxDrawdownPct: 0,
+    sharpeRatio: 0,
+    profitFactor: 0,
+    avgWinPct: 0,
+    avgLossPct: 0,
+    avgBarsHeld: 0,
+    bestTradePct: 0,
+    worstTradePct: 0,
+    equityCurve: [],
+    signals: [],
+    buyAndHoldPct: 0,
+  };
 }
 
 const TRADE_HISTORY_PAGE_SIZE = 10;
@@ -96,6 +228,18 @@ export default function GoldWatcherRow({
   const [tradeHistoryReloadKey, setTradeHistoryReloadKey] = useState(0);
   const [tradeHistoryPage, setTradeHistoryPage] = useState(0);
   const [showRemoveConfirm, setShowRemoveConfirm] = useState(false);
+  const [showResetConfirm, setShowResetConfirm] = useState(false);
+
+  // Chart panel state
+  const [showLiveChart, setShowLiveChart] = useState(false);
+  const [histLimit, setHistLimit] = useState<number>(500);
+  const [histEnd, setHistEnd] = useState<string>("");
+  const [histLoading, setHistLoading] = useState(false);
+  const [histError, setHistError] = useState<string | null>(null);
+
+  // Initial-data loader (must run before polling can start, so the strategy has
+  // enough bars to compute the first signal).
+  const [loadingInitial, setLoadingInitial] = useState(false);
 
   const lastAlertBarRef = useRef<number>(0);
   const lastBuyRef = useRef<{ price: number; time: number } | null>(null);
@@ -104,6 +248,20 @@ export default function GoldWatcherRow({
 
   useEffect(() => { cfgRef.current = config; }, [config]);
   useEffect(() => { onPollingChange(polling); }, [polling, onPollingChange]);
+
+  // One-time auto-snap: if a saved watcher has pollSeconds that doesn't match
+  // the new TF-aware options (e.g., interval=1h with pollSeconds=300 from old data),
+  // snap to the default for that TF. Runs once per (id + interval) combo.
+  const didSnapPollRef = useRef<string>("");
+  useEffect(() => {
+    const key = `${config.id}:${config.interval}`;
+    if (didSnapPollRef.current === key) return;
+    didSnapPollRef.current = key;
+    const validValues = pollOptionsForInterval(config.interval).map(o => o.value);
+    if (!validValues.includes(config.pollSeconds)) {
+      onUpdateProp(config.id, { pollSeconds: defaultPollSecondsForInterval(config.interval) });
+    }
+  }, [config.id, config.interval, config.pollSeconds, onUpdateProp]);
 
   const symMeta = findGoldSymbol(config.symbol);
   const decimals = symMeta?.decimals ?? 2;
@@ -116,6 +274,99 @@ export default function GoldWatcherRow({
       .catch(() => { /* ignore */ });
     return () => { cancelled = true; };
   }, [config.id, tradeHistoryReloadKey]);
+
+  // Indicators for the chart — only compute when chart is visible (saves CPU)
+  const liveIndicators = useMemo<AllIndicators | null>(
+    () => showLiveChart && klines.length >= 15 ? computeAll(klines) : null,
+    [showLiveChart, klines]
+  );
+
+  // Convert trade history → BUY/SELL markers for the chart
+  const liveTradeMarkers = useMemo<BacktestResult | null>(
+    () => showLiveChart ? tradeHistoryToBacktestResult(tradeHistory, klines) : null,
+    [showLiveChart, tradeHistory, klines]
+  );
+
+  // Backfill historical klines into the chart (calls /api/klines-yahoo with limit + endTime)
+  const maxLimit = YAHOO_MAX_LIMIT[config.interval];
+  const handleBackfill = useCallback(async () => {
+    const meta = findGoldSymbol(config.symbol);
+    if (!meta?.yahoo) {
+      setHistError(`${config.symbol} ไม่มี Yahoo ticker — backtest-only`);
+      return;
+    }
+    const clamped = Math.max(50, Math.min(maxLimit, histLimit || 500));
+    setHistLoading(true);
+    setHistError(null);
+    try {
+      const params = new URLSearchParams({
+        symbol: meta.yahoo,
+        interval: config.interval,
+        limit: String(clamped),
+      });
+      if (histEnd) {
+        const endMs = new Date(histEnd).getTime();
+        if (isNaN(endMs)) throw new Error("วันที่สิ้นสุดไม่ถูกต้อง");
+        params.set("endTime", String(endMs));
+      }
+      const res = await fetch(`/api/klines-yahoo?${params}`);
+      if (!res.ok) {
+        const b = await res.json().catch(() => ({}));
+        throw new Error(b.error || `HTTP ${res.status}`);
+      }
+      const raw: BinanceKlineRaw[] = await res.json();
+      const fresh = raw.map(parseKline);
+      if (fresh.length === 0) {
+        setHistError("ไม่มีข้อมูลในช่วงที่ขอ (อาจอยู่นอกช่วงที่ Yahoo รองรับ)");
+        return;
+      }
+      setKlines(prev => mergeKlines(prev, fresh));
+    } catch (err) {
+      setHistError(String(err));
+    } finally {
+      setHistLoading(false);
+    }
+  }, [config.symbol, config.interval, histLimit, histEnd, maxLimit]);
+
+  // Whether enough bars are loaded for the backtest engine to produce signals.
+  const dataLoaded = klines.length >= MIN_BARS_FOR_POLLING;
+
+  // Load initial historical klines so the strategy has enough data to compute signals.
+  // Called before user can start polling.
+  const handleLoadInitialData = useCallback(async () => {
+    const meta = findGoldSymbol(config.symbol);
+    if (!meta?.yahoo) {
+      setError(`Symbol ${config.symbol} ไม่มี Yahoo ticker — backtest-only`);
+      return;
+    }
+    setLoadingInitial(true);
+    setError(null);
+    try {
+      const limit = Math.max(MIN_BARS_FOR_POLLING, Math.min(maxLimit, config.klineLimit || 200));
+      const params = new URLSearchParams({
+        symbol: meta.yahoo,
+        interval: config.interval,
+        limit: String(limit),
+      });
+      const res = await fetch(`/api/klines-yahoo?${params}`);
+      if (!res.ok) {
+        const b = await res.json().catch(() => ({}));
+        throw new Error(b.error || `HTTP ${res.status}`);
+      }
+      const raw: BinanceKlineRaw[] = await res.json();
+      const fresh = raw.map(parseKline);
+      if (fresh.length === 0) {
+        setError("Yahoo ไม่มีข้อมูลในช่วงที่ขอ (อาจอยู่นอกช่วงที่รองรับ)");
+        return;
+      }
+      setKlines(prev => mergeKlines(prev, fresh));
+      setLastPolledAt(new Date());
+    } catch (err) {
+      setError(`โหลดข้อมูลเริ่มต้นล้มเหลว: ${String(err)}`);
+    } finally {
+      setLoadingInitial(false);
+    }
+  }, [config.symbol, config.interval, config.klineLimit, maxLimit]);
 
   // Send Discord
   const send = useCallback(async (payload: { content?: string; embeds?: unknown[]; username?: string; }): Promise<{ ok: boolean; message?: string }> => {
@@ -291,12 +542,46 @@ export default function GoldWatcherRow({
 
   const togglePolling = () => {
     if (polling) { setPolling(false); return; }
+    if (!dataLoaded) {
+      setError(`กรุณากด "📥 ดึงข้อมูล" ก่อน — ต้องการอย่างน้อย ${MIN_BARS_FOR_POLLING} แท่ง เพื่อให้ Indicator คำนวณได้`);
+      return;
+    }
     if (!config.useEnvWebhook && !config.webhookUrl.trim() && config.alertsEnabled) {
       setError("กรุณาตั้ง Webhook URL ก่อน หรือเปิดใช้ env webhook หรือปิด alerts");
       return;
     }
     lastBuyRef.current = null;
     setPolling(true);
+  };
+
+  // Reset config to defaults + clear chart data (also stops polling).
+  const doReset = () => {
+    setShowResetConfirm(false);
+    setPolling(false);
+    const rsi = STRATEGIES.find(s => s.id === "rsi")!;
+    const defaultInterval: GoldLiveInterval = "1h";
+    onUpdate({
+      symbol: GOLD_SYMBOLS[0].label,
+      interval: defaultInterval,
+      strategyId: "rsi" as StrategyId,
+      strategyParams: { ...rsi.params },
+      pollSeconds: defaultPollSecondsForInterval(defaultInterval),
+      webhookUrl: "",
+      useEnvWebhook: false,
+      alertsEnabled: true,
+      klineLimit: 200,
+    });
+    setKlines([]);
+    setLastPolledAt(null);
+    setTickSeconds(0);
+    setError(null);
+    setLastSignal(null);
+    setShowLiveChart(false);
+    setHistLimit(500);
+    setHistEnd("");
+    setHistError(null);
+    lastAlertBarRef.current = 0;
+    lastBuyRef.current = null;
   };
 
   const remaining = Math.max(0, config.pollSeconds - tickSeconds);
@@ -354,12 +639,37 @@ export default function GoldWatcherRow({
         </div>
 
         <div className="ml-auto flex items-center gap-1.5">
+          {/* Step A: must press this before Start to load enough bars for indicators */}
           <Button
             size="sm"
+            variant={dataLoaded ? "outline" : "default"}
+            disabled={loadingInitial || polling}
+            className={
+              dataLoaded
+                ? "text-emerald-500 border-emerald-500/30 hover:bg-emerald-500/10"
+                : "bg-amber-500 hover:bg-amber-600 text-white animate-pulse"
+            }
+            onClick={handleLoadInitialData}
+            title={dataLoaded ? `โหลดแล้ว ${klines.length} แท่ง — กดเพื่อ refresh` : "ต้องโหลดข้อมูลก่อนเริ่ม polling"}
+          >
+            {loadingInitial ? "⌛ กำลังโหลด..." : dataLoaded ? `✓ ${klines.length} แท่ง` : "📥 ดึงข้อมูล"}
+          </Button>
+          <Button
+            size="sm"
+            disabled={!polling && !dataLoaded}
             className={polling ? "bg-red-500 hover:bg-red-600 text-white" : "bg-emerald-500 hover:bg-emerald-600 text-white"}
             onClick={togglePolling}
+            title={!polling && !dataLoaded ? "กด 📥 ดึงข้อมูล ก่อน" : ""}
           >
             {polling ? "■ หยุด" : "▶ เริ่ม"}
+          </Button>
+          <Button
+            size="sm"
+            variant={showLiveChart ? "default" : "outline"}
+            className={showLiveChart ? "bg-blue-500 hover:bg-blue-600 text-white" : "text-blue-500 border-blue-500/30 hover:bg-blue-500/10"}
+            onClick={() => setShowLiveChart(v => !v)}
+          >
+            {showLiveChart ? "▲ ปิดกราฟ" : "📊 ดูกราฟ"}
           </Button>
           <Button size="sm" variant="outline" onClick={() => setExpanded(v => !v)}>
             {expanded ? "▲ ย่อ" : "▼ แก้ไข"}
@@ -369,6 +679,8 @@ export default function GoldWatcherRow({
             variant="outline"
             className="text-red-500 border-red-500/30 hover:bg-red-500/10"
             onClick={() => setShowRemoveConfirm(true)}
+            disabled={polling}
+            title={polling ? "หยุด polling ก่อนถึงจะลบได้" : "ลบ Watcher"}
           >
             ✕
           </Button>
@@ -381,9 +693,119 @@ export default function GoldWatcherRow({
         </div>
       )}
 
+      {/* Live chart panel — toggled by "📊 ดูกราฟ" */}
+      {showLiveChart && (
+        <div className="border-t border-border/40 bg-background/40 p-3 space-y-2">
+          {/* Backfill toolbar */}
+          <div className="rounded-md border border-blue-500/20 bg-blue-500/5 p-2 space-y-2">
+            <div className="flex items-center justify-between gap-2 flex-wrap">
+              <p className="text-[12px] font-semibold text-blue-400">
+                📥 ดึงข้อมูลย้อนหลังเพิ่ม (เพื่อคำนวณ Indicator)
+              </p>
+              <span className="text-[10px] text-muted-foreground">
+                Yahoo {config.interval} • <span className="text-foreground/80">max {maxLimit.toLocaleString()} แท่ง</span> ({YAHOO_INTERVAL_LIMITS_HINT[config.interval]})
+              </span>
+            </div>
+            <div className="flex flex-wrap items-end gap-2">
+              <Field label="จำนวนแท่ง (50 - max)">
+                <Input
+                  type="number"
+                  min={50}
+                  max={maxLimit}
+                  step={50}
+                  value={histLimit}
+                  onChange={e => {
+                    const n = parseInt(e.target.value, 10);
+                    if (!isNaN(n)) setHistLimit(n);
+                  }}
+                  className="w-28 h-8 text-[11px]"
+                />
+              </Field>
+              <Field label="วันที่สิ้นสุด (optional)">
+                <Input
+                  type="datetime-local"
+                  value={histEnd}
+                  onChange={e => setHistEnd(e.target.value)}
+                  className="w-44 h-8 text-[11px]"
+                />
+              </Field>
+              {histLimit > maxLimit && (
+                <Badge variant="outline" className="text-[10px] text-amber-500 border-amber-500/40">
+                  ⚠ เกิน max — จะถูก clamp เป็น {maxLimit.toLocaleString()}
+                </Badge>
+              )}
+              <Button
+                size="sm"
+                disabled={histLoading}
+                className="bg-blue-500 hover:bg-blue-600 text-white h-8"
+                onClick={handleBackfill}
+              >
+                {histLoading ? "⌛ กำลังดึง..." : "▼ ดึงข้อมูล"}
+              </Button>
+              {histEnd && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-8 text-[11px]"
+                  onClick={() => setHistEnd("")}
+                  title="ล้างวันที่สิ้นสุด (กลับมาดึงล่าสุด)"
+                >
+                  ล้างวันที่
+                </Button>
+              )}
+            </div>
+            {histError && <p className="text-[10px] text-red-500">{histError}</p>}
+            <p className="text-[10px] text-muted-foreground">
+              💡 ข้อมูลที่ดึงมาจะรวมกับ klines ที่มีอยู่ (deduplicate ตาม openTime) — มากกว่า = indicator แม่นกว่า แต่ใช้ memory เยอะกว่า
+            </p>
+          </div>
+
+          {/* Chart */}
+          {klines.length === 0 ? (
+            <p className="text-[11px] text-muted-foreground text-center py-6 border border-dashed rounded">
+              ยังไม่มีข้อมูล — กด ▶ เริ่ม เพื่อ poll หรือกด &quot;▼ ดึงข้อมูล&quot; ด้านบนเพื่อ backfill
+            </p>
+          ) : (
+            <>
+              <p className="text-[10px] text-muted-foreground">
+                📍 Markers: ประวัติการซื้อขายของ Watcher นี้ ({tradeHistory.length} รายการใน history) — เฉพาะ trade ที่ตรงกับช่วง klines ที่โหลด
+              </p>
+              <KlineGraph
+                klines={klines}
+                indicators={liveIndicators}
+                btResult={liveTradeMarkers}
+                strategyId={config.strategyId}
+              />
+            </>
+          )}
+        </div>
+      )}
+
       {/* Expanded edit panel */}
       {expanded && (
         <div className="border-t border-border/40 bg-background/40 p-3 space-y-3">
+          {/* Lock notice + Reset action */}
+          <div className="flex items-center justify-between gap-2 flex-wrap">
+            {polling ? (
+              <p className="text-[11px] text-amber-500 font-medium flex items-center gap-1">
+                🔒 หยุด polling ก่อนเพื่อแก้ไขค่าใน ขั้นตอน 1-3
+              </p>
+            ) : (
+              <p className="text-[11px] text-muted-foreground">
+                ✏️ แก้ไขค่าใน ขั้นตอน 1-3 ได้ (ยังไม่ polling)
+              </p>
+            )}
+            <Button
+              size="sm"
+              variant="outline"
+              className="text-amber-500 border-amber-500/30 hover:bg-amber-500/10"
+              onClick={() => setShowResetConfirm(true)}
+              title="รีเซ็ตค่าทั้งหมด — ขั้นตอน 1-3 + กราฟ + klines"
+            >
+              ↺ Reset ค่า
+            </Button>
+          </div>
+
           {/* Step 1: Symbol + TF + Poll */}
           <details className="group">
             <summary className="flex items-center gap-1 cursor-pointer list-none text-[12px] font-semibold text-sky-400 hover:text-sky-300 select-none">
@@ -395,14 +817,14 @@ export default function GoldWatcherRow({
               <ul className="text-[10px] text-muted-foreground space-y-0.5 list-disc pl-4">
                 <li><span className="text-foreground/80">คู่</span> — Metals (XAU/XAG/...) หรือ Forex Majors (EUR/USD, ...)</li>
                 <li><span className="text-foreground/80">Timeframe</span> — Yahoo รองรับ 1m, 5m, 15m, 30m, 1h, 1d (มีข้อจำกัดย้อนหลัง — ดู badge ใต้ select)</li>
-                <li><span className="text-foreground/80">Polling</span> — แนะนำ ≥ 60s เพื่อไม่กิน rate limit</li>
+                <li><span className="text-foreground/80">Polling</span> — เลือกได้เฉพาะค่าที่ตรงกับ TF (1× = ทุกแท่งใหม่, 2-4× = เช็คน้อยลง)</li>
               </ul>
             </div>
           </details>
 
-          <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+          <fieldset disabled={polling} className={`grid grid-cols-2 md:grid-cols-3 gap-3 ${polling ? "opacity-60" : ""}`}>
             <Field label="คู่ (Symbol)">
-              <Select value={config.symbol} onValueChange={v => { if (v) onUpdate({ symbol: v }); }}>
+              <Select value={config.symbol} onValueChange={v => { if (v) onUpdate({ symbol: v }); }} disabled={polling}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
                   <SelectGroup>
@@ -421,7 +843,20 @@ export default function GoldWatcherRow({
               </Select>
             </Field>
             <Field label="Timeframe">
-              <Select value={config.interval} onValueChange={v => { if (v) onUpdate({ interval: v as GoldLiveInterval }); }}>
+              <Select
+                value={config.interval}
+                onValueChange={v => {
+                  if (!v) return;
+                  const nextTf = v as GoldLiveInterval;
+                  // Auto-sync pollSeconds to default (1× TF) when timeframe changes,
+                  // so polling always matches the new TF cadence.
+                  onUpdate({
+                    interval: nextTf,
+                    pollSeconds: defaultPollSecondsForInterval(nextTf),
+                  });
+                }}
+                disabled={polling}
+              >
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
                   {Object.entries(GOLD_LIVE_INTERVAL_GROUPS).map(([g, ints]) => (
@@ -433,15 +868,22 @@ export default function GoldWatcherRow({
               </Select>
               <p className="text-[9px] text-muted-foreground mt-0.5">{YAHOO_INTERVAL_LIMITS_HINT[config.interval]}</p>
             </Field>
-            <Field label="Polling ทุก">
-              <Select value={String(config.pollSeconds)} onValueChange={v => { if (v) onUpdate({ pollSeconds: parseInt(v, 10) || 60 }); }}>
+            <Field label="Polling ทุก (= TF)">
+              <Select
+                value={String(config.pollSeconds)}
+                onValueChange={v => { if (v) onUpdate({ pollSeconds: parseInt(v, 10) || defaultPollSecondsForInterval(config.interval) }); }}
+                disabled={polling}
+              >
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  {GOLD_POLL_OPTIONS.map(o => <SelectItem key={o.value} value={String(o.value)}>{o.label}</SelectItem>)}
+                  {pollOptionsForInterval(config.interval).map(o => (
+                    <SelectItem key={o.value} value={String(o.value)}>{o.label}</SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
+              <p className="text-[9px] text-muted-foreground mt-0.5">ตัวเลือกผูกกับ Timeframe</p>
             </Field>
-          </div>
+          </fieldset>
 
           {/* Step 2: Strategy */}
           <details className="group">
@@ -457,26 +899,29 @@ export default function GoldWatcherRow({
               </ul>
             </div>
           </details>
-          <Field label="กลยุทธ์ (Indicator)">
-            <Select
-              value={config.strategyId}
-              onValueChange={v => {
-                if (!v) return;
-                const next = v as StrategyId;
-                const strat = STRATEGIES.find(s => s.id === next);
-                if (!strat) return;
-                onUpdate({ strategyId: next, strategyParams: { ...strat.params } });
-              }}
-            >
-              <SelectTrigger><SelectValue /></SelectTrigger>
-              <SelectContent>
-                <SelectGroup>
-                  <SelectLabel>เลือก Indicator</SelectLabel>
-                  {STRATEGIES.map(s => <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>)}
-                </SelectGroup>
-              </SelectContent>
-            </Select>
-          </Field>
+          <fieldset disabled={polling} className={polling ? "opacity-60" : ""}>
+            <Field label="กลยุทธ์ (Indicator)">
+              <Select
+                value={config.strategyId}
+                onValueChange={v => {
+                  if (!v) return;
+                  const next = v as StrategyId;
+                  const strat = STRATEGIES.find(s => s.id === next);
+                  if (!strat) return;
+                  onUpdate({ strategyId: next, strategyParams: { ...strat.params } });
+                }}
+                disabled={polling}
+              >
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectGroup>
+                    <SelectLabel>เลือก Indicator</SelectLabel>
+                    {STRATEGIES.map(s => <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>)}
+                  </SelectGroup>
+                </SelectContent>
+              </Select>
+            </Field>
+          </fieldset>
 
           {/* Step 3: Webhook */}
           <details className="group">
@@ -493,50 +938,54 @@ export default function GoldWatcherRow({
               </ul>
             </div>
           </details>
-          <div className="grid grid-cols-1 md:grid-cols-[1fr_auto_auto] gap-2 items-end">
-            <Field label="Discord Webhook URL">
-              <Input
-                type="password"
-                placeholder="https://discord.com/api/webhooks/..."
-                value={config.webhookUrl}
-                onChange={e => onUpdate({ webhookUrl: e.target.value })}
-                disabled={config.useEnvWebhook}
-                autoComplete="off"
-              />
-            </Field>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={handleTest}
-              disabled={testing || (!config.useEnvWebhook && !config.webhookUrl.trim())}
-            >
-              {testing ? "ทดสอบ..." : "ทดสอบ"}
-            </Button>
-            <Button
-              variant={config.useEnvWebhook ? "default" : "outline"}
-              size="sm"
-              onClick={() => onUpdate({ useEnvWebhook: !config.useEnvWebhook })}
-            >
-              {config.useEnvWebhook ? "● ใช้ env" : "○ ใช้ URL"}
-            </Button>
-          </div>
-          {testMsg && (
-            <p className={`text-[11px] ${testMsg.startsWith("✓") ? "text-emerald-500" : "text-red-500"}`}>
-              {testMsg}
-            </p>
-          )}
+          <fieldset disabled={polling} className={`space-y-2 ${polling ? "opacity-60" : ""}`}>
+            <div className="grid grid-cols-1 md:grid-cols-[1fr_auto_auto] gap-2 items-end">
+              <Field label="Discord Webhook URL">
+                <Input
+                  type="password"
+                  placeholder="https://discord.com/api/webhooks/..."
+                  value={config.webhookUrl}
+                  onChange={e => onUpdate({ webhookUrl: e.target.value })}
+                  disabled={config.useEnvWebhook || polling}
+                  autoComplete="off"
+                />
+              </Field>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleTest}
+                disabled={testing || polling || (!config.useEnvWebhook && !config.webhookUrl.trim())}
+              >
+                {testing ? "ทดสอบ..." : "ทดสอบ"}
+              </Button>
+              <Button
+                variant={config.useEnvWebhook ? "default" : "outline"}
+                size="sm"
+                onClick={() => onUpdate({ useEnvWebhook: !config.useEnvWebhook })}
+                disabled={polling}
+              >
+                {config.useEnvWebhook ? "● ใช้ env" : "○ ใช้ URL"}
+              </Button>
+            </div>
+            {testMsg && (
+              <p className={`text-[11px] ${testMsg.startsWith("✓") ? "text-emerald-500" : "text-red-500"}`}>
+                {testMsg}
+              </p>
+            )}
 
-          {/* Toggle alerts */}
-          <Field label="แจ้งเตือน Discord">
-            <Button
-              variant={config.alertsEnabled ? "default" : "outline"}
-              size="sm"
-              className={config.alertsEnabled ? "bg-emerald-500/90 text-white" : ""}
-              onClick={() => onUpdate({ alertsEnabled: !config.alertsEnabled })}
-            >
-              {config.alertsEnabled ? "● เปิด" : "○ ปิด"}
-            </Button>
-          </Field>
+            {/* Toggle alerts */}
+            <Field label="แจ้งเตือน Discord">
+              <Button
+                variant={config.alertsEnabled ? "default" : "outline"}
+                size="sm"
+                className={config.alertsEnabled ? "bg-emerald-500/90 text-white" : ""}
+                onClick={() => onUpdate({ alertsEnabled: !config.alertsEnabled })}
+                disabled={polling}
+              >
+                {config.alertsEnabled ? "● เปิด" : "○ ปิด"}
+              </Button>
+            </Field>
+          </fieldset>
 
           {lastPolledAt && (
             <p className="text-[10px] text-muted-foreground">
@@ -669,6 +1118,54 @@ export default function GoldWatcherRow({
                 </div>
               );
             })()}
+          </div>
+        </div>
+      )}
+
+      {/* Confirm reset modal */}
+      {showResetConfirm && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4"
+          onClick={() => setShowResetConfirm(false)}
+        >
+          <div
+            className="w-full max-w-md rounded-lg border border-amber-500/30 bg-background shadow-xl"
+            onClick={e => e.stopPropagation()}
+          >
+            <div className="p-4 space-y-3">
+              <div className="flex items-center gap-2">
+                <span className="text-2xl">↺</span>
+                <h3 className="text-sm font-semibold">ยืนยันการ Reset ค่า Watcher</h3>
+              </div>
+              <p className="text-[13px] text-muted-foreground">
+                จะรีเซ็ตค่าทั้งหมดของ <span className="font-semibold text-foreground">{config.symbol}</span> (TF: {config.interval}) กลับเป็นค่าเริ่มต้น
+              </p>
+              <div className="rounded border border-amber-500/20 bg-amber-500/5 p-2 space-y-1 text-[11px]">
+                <p className="font-medium text-amber-500">รายการที่จะถูก reset:</p>
+                <ul className="text-muted-foreground space-y-0.5 list-disc pl-4">
+                  <li>ขั้นตอน 1 — Symbol, Timeframe, Polling → กลับเป็น <code>XAU/USD · 1h · 1× TF</code></li>
+                  <li>ขั้นตอน 2 — กลยุทธ์ → กลับเป็น <code>RSI</code></li>
+                  <li>ขั้นตอน 3 — Webhook URL + toggle → ล้างค่า</li>
+                  <li>กราฟ + ข้อมูลแท่งเทียนที่โหลด → เคลียร์ทั้งหมด</li>
+                  <li>หยุด polling อัตโนมัติ (ถ้ายังทำงานอยู่)</li>
+                </ul>
+              </div>
+              <p className="text-[11px] text-emerald-500">
+                ✓ ประวัติเทรดใน IndexedDB จะยังอยู่ (ไม่ถูกลบ)
+              </p>
+              <div className="flex justify-end gap-2 pt-1">
+                <Button size="sm" variant="outline" onClick={() => setShowResetConfirm(false)}>
+                  ยกเลิก
+                </Button>
+                <Button
+                  size="sm"
+                  className="bg-amber-500 hover:bg-amber-600 text-white"
+                  onClick={doReset}
+                >
+                  ↺ Reset ทั้งหมด
+                </Button>
+              </div>
+            </div>
           </div>
         </div>
       )}
