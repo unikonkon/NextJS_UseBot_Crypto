@@ -1773,6 +1773,8 @@ function WatcherRowImpl({
   const [btRunning, setBtRunning] = useState(false);
   const [showBacktest, setShowBacktest] = useState(false);
   const [showRemoveConfirm, setShowRemoveConfirm] = useState(false);
+  const [tradeHistoryPage, setTradeHistoryPage] = useState(0);
+  const TRADE_HISTORY_PAGE_SIZE = 10;
 
   const lastAlertBarRef = useRef<number>(0);
   const lastBuyRef = useRef<{ price: number; time: number } | null>(null);
@@ -1870,12 +1872,12 @@ function WatcherRowImpl({
     else color = 0xef4444;
 
     const fields: { name: string; value: string; inline?: boolean }[] = [
-      { name: "ราคา", value: fmtPrice(price), inline: true },
-      { name: "Open", value: fmtPrice(bar.open), inline: true },
-      { name: "High", value: fmtPrice(bar.high), inline: true },
-      { name: "Low", value: fmtPrice(bar.low), inline: true },
-      { name: "Volume", value: fmtNum(bar.volume), inline: true },
-      { name: "เวลาแท่ง", value: fmtFullDate(bar.openTime), inline: false },
+      { name: "ราคา", value: fmtPrice(price), inline: false },
+      // { name: "Open", value: fmtPrice(bar.open), inline: true },
+      // { name: "High", value: fmtPrice(bar.high), inline: true },
+      // { name: "Low", value: fmtPrice(bar.low), inline: true },
+      // { name: "Volume", value: fmtNum(bar.volume), inline: true },
+      // { name: "เวลาแท่ง", value: fmtFullDate(bar.openTime), inline: false },
     ];
 
     if (!isBuy) {
@@ -1897,7 +1899,7 @@ function WatcherRowImpl({
         color,
         fields,
         timestamp: new Date().toISOString(),
-        footer: { text: `${sym} • ${intv} • Crypto Indicator Bot` },
+        // footer: { text: `${sym} • ${intv} • Crypto Indicator Bot` },
       }],
     });
 
@@ -2530,6 +2532,10 @@ function WatcherRowImpl({
                   เก็บใน IndexedDB ของเบราว์เซอร์ • {tradeHistory.length} รายการ
                 </p>
               </div>
+
+              <div className="flex items-center gap-2">
+                <p className="text-[16px] text-muted-foreground">P&L ผลลัพธ์ที้งหมด: {tradeHistory.reduce((acc, t) => acc + (t.pnlPct || 0), 0).toFixed(2)}%</p>
+              </div>
               {tradeHistory.length > 0 && (
                 <Button
                   size="sm"
@@ -2550,71 +2556,133 @@ function WatcherRowImpl({
               <p className="text-[11px] text-muted-foreground text-center py-3">
                 ยังไม่มีประวัติ — จะเริ่มบันทึกเมื่อ Watcher นี้ส่งสัญญาณ BUY/SELL เข้า Discord
               </p>
-            ) : (
-              <div className="max-h-64 overflow-y-auto rounded border border-border/40">
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead className="text-[10px]">เวลา</TableHead>
-                      <TableHead className="text-[10px] text-center">สัญญาณ</TableHead>
-                      <TableHead className="text-[10px] text-right">ราคา</TableHead>
-                      <TableHead className="text-[10px] text-right">ราคา BUY ก่อน</TableHead>
-                      <TableHead className="text-[10px] text-right">P&amp;L%</TableHead>
-                      <TableHead className="text-[10px]">สถานะ</TableHead>
-                      <TableHead className="text-[10px] w-8"></TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {tradeHistory.map(t => (
-                      <TableRow key={t.id} className={t.action === "BUY" ? "bg-emerald-500/[0.04]" : "bg-red-500/[0.04]"}>
-                        <TableCell className="text-[10px] text-muted-foreground tabular-nums">
-                          {new Date(t.time).toLocaleString()}
-                        </TableCell>
-                        <TableCell className="text-center">
-                          <Badge variant="outline" className={`text-[9px] ${t.action === "BUY" ? "text-emerald-500 border-emerald-500/30" : "text-red-500 border-red-500/30"}`}>
-                            {t.action}
-                          </Badge>
-                        </TableCell>
-                        <TableCell className="text-[10px] text-right tabular-nums">{t.price.toFixed(t.price >= 1 ? 4 : 6)}</TableCell>
-                        <TableCell className="text-[10px] text-right tabular-nums">
-                          {t.action === "SELL"
-                            ? (t.entryPrice != null ? <span className="text-emerald-500/80">{t.entryPrice.toFixed(t.entryPrice >= 1 ? 4 : 6)}</span> : <span className="text-muted-foreground">-</span>)
-                            : <span className="text-muted-foreground">—</span>}
-                        </TableCell>
-                        <TableCell className="text-[10px] text-right tabular-nums">
-                          {t.action === "SELL"
-                            ? (t.pnlPct != null
-                              ? <span className={`font-medium ${t.pnlPct >= 0 ? "text-emerald-500" : "text-red-500"}`}>
-                                {t.pnlPct >= 0 ? "+" : ""}{t.pnlPct.toFixed(2)}%
-                              </span>
-                              : <span className="text-muted-foreground">-</span>)
-                            : <span className="text-muted-foreground">—</span>}
-                        </TableCell>
-                        <TableCell className="text-[10px]">
-                          {t.status === "ok"
-                            ? <span className="text-emerald-500">✓</span>
-                            : <span className="text-red-500" title={t.message}>✗</span>}
-                        </TableCell>
-                        <TableCell>
-                          <Button
-                            size="xs"
-                            variant="outline"
-                            className="h-5 w-5 p-0 text-red-500 border-red-500/30 hover:bg-red-500/10"
-                            title="ลบรายการนี้"
-                            onClick={async () => {
-                              await deleteTrade(t.id).catch(() => { });
-                              setTradeHistoryReloadKey(k => k + 1);
-                            }}
-                          >
-                            ✕
-                          </Button>
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </div>
-            )}
+            ) : (() => {
+              const totalPages = Math.max(1, Math.ceil(tradeHistory.length / TRADE_HISTORY_PAGE_SIZE));
+              const currentPage = Math.min(tradeHistoryPage, totalPages - 1);
+              const startIdx = currentPage * TRADE_HISTORY_PAGE_SIZE;
+              const pageItems = tradeHistory.slice(startIdx, startIdx + TRADE_HISTORY_PAGE_SIZE);
+              return (
+                <div className="space-y-2">
+                  <div className="overflow-x-auto rounded border border-border/40">
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead className="text-[10px]">เวลา</TableHead>
+                          <TableHead className="text-[10px]">สัญญาณ</TableHead>
+                          <TableHead className="text-[10px]">กลยุทธ์</TableHead>
+                          <TableHead className="text-[10px] text-center">TF</TableHead>
+                          <TableHead className="text-[10px] text-right">ราคา</TableHead>
+                          <TableHead className="text-[10px] text-right">ราคา BUY ก่อน</TableHead>
+                          <TableHead className="text-[10px] text-right">P&amp;L%</TableHead>
+                          <TableHead className="text-[10px]">สถานะ</TableHead>
+                          <TableHead className="text-[10px] w-8"></TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {pageItems.map(t => (
+                          <TableRow key={t.id} className={t.action === "BUY" ? "bg-emerald-500/4" : "bg-red-500/4"}>
+                            <TableCell className="text-[10px] text-muted-foreground tabular-nums whitespace-nowrap">
+                              {new Date(t.time).toLocaleString()}
+                            </TableCell>
+                            <TableCell className="whitespace-nowrap">
+                              <Badge variant="outline" className={`text-[9px] ${t.action === "BUY" ? "text-emerald-500 border-emerald-500/30" : "text-red-500 border-red-500/30"}`}>
+                                {t.action} — {t.symbol}
+                              </Badge>
+                            </TableCell>
+                            <TableCell className="text-[10px] whitespace-nowrap">{t.strategyName}</TableCell>
+                            <TableCell className="text-[10px] text-center font-medium">{t.interval}</TableCell>
+                            <TableCell className="text-[10px] text-right tabular-nums">{t.price.toFixed(t.price >= 1 ? 4 : 6)}</TableCell>
+                            <TableCell className="text-[10px] text-right tabular-nums">
+                              {t.action === "SELL"
+                                ? (t.entryPrice != null ? <span className="text-emerald-500/80">{t.entryPrice.toFixed(t.entryPrice >= 1 ? 4 : 6)}</span> : <span className="text-muted-foreground">-</span>)
+                                : <span className="text-muted-foreground">—</span>}
+                            </TableCell>
+                            <TableCell className="text-[10px] text-right tabular-nums">
+                              {t.action === "SELL"
+                                ? (t.pnlPct != null
+                                  ? <span className={`font-medium ${t.pnlPct >= 0 ? "text-emerald-500" : "text-red-500"}`}>
+                                    {t.pnlPct >= 0 ? "+" : ""}{t.pnlPct.toFixed(2)}%
+                                  </span>
+                                  : <span className="text-muted-foreground">-</span>)
+                                : <span className="text-muted-foreground">—</span>}
+                            </TableCell>
+                            <TableCell className="text-[10px]">
+                              {t.status === "ok"
+                                ? <span className="text-emerald-500">✓</span>
+                                : <span className="text-red-500" title={t.message}>✗</span>}
+                            </TableCell>
+                            <TableCell>
+                              <Button
+                                size="xs"
+                                variant="outline"
+                                className="h-5 w-5 p-0 text-red-500 border-red-500/30 hover:bg-red-500/10"
+                                title="ลบรายการนี้"
+                                onClick={async () => {
+                                  await deleteTrade(t.id).catch(() => { });
+                                  setTradeHistoryReloadKey(k => k + 1);
+                                }}
+                              >
+                                ✕
+                              </Button>
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </div>
+
+                  {/* Pagination */}
+                  {totalPages > 1 && (
+                    <div className="flex items-center justify-between gap-2 text-[10px]">
+                      <span className="text-muted-foreground">
+                        แสดง {startIdx + 1}-{Math.min(startIdx + TRADE_HISTORY_PAGE_SIZE, tradeHistory.length)} จาก {tradeHistory.length} รายการ
+                      </span>
+                      <div className="flex items-center gap-1">
+                        <Button
+                          size="xs"
+                          variant="outline"
+                          disabled={currentPage === 0}
+                          onClick={() => setTradeHistoryPage(0)}
+                          className="h-6 px-2"
+                        >
+                          « แรก
+                        </Button>
+                        <Button
+                          size="xs"
+                          variant="outline"
+                          disabled={currentPage === 0}
+                          onClick={() => setTradeHistoryPage(p => Math.max(0, p - 1))}
+                          className="h-6 px-2"
+                        >
+                          ‹ ก่อน
+                        </Button>
+                        <span className="px-2 tabular-nums text-muted-foreground">
+                          หน้า {currentPage + 1} / {totalPages}
+                        </span>
+                        <Button
+                          size="xs"
+                          variant="outline"
+                          disabled={currentPage >= totalPages - 1}
+                          onClick={() => setTradeHistoryPage(p => Math.min(totalPages - 1, p + 1))}
+                          className="h-6 px-2"
+                        >
+                          ถัดไป ›
+                        </Button>
+                        <Button
+                          size="xs"
+                          variant="outline"
+                          disabled={currentPage >= totalPages - 1}
+                          onClick={() => setTradeHistoryPage(totalPages - 1)}
+                          className="h-6 px-2"
+                        >
+                          ท้ายสุด »
+                        </Button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
           </div>
 
         </div>
