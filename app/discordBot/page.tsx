@@ -2163,7 +2163,22 @@ function WatcherRowImpl({
       {/* Expanded edit panel */}
       {expanded && (
         <div className="border-t border-border/40 bg-background/40 p-3 space-y-3">
-          {/* Symbol + TF + Strategy + Poll */}
+          {/* Step 1: Symbol + TF + Strategy + Poll */}
+          <details className="group">
+            <summary className="flex items-center gap-1 cursor-pointer list-none text-[12px] font-semibold text-sky-400 hover:text-sky-300 select-none">
+              <span className="inline-block transition-transform group-open:rotate-90">▶</span>
+              <span>ขั้นตอนที่ 1 · เลือกเหรียญและช่วงเวลา</span>
+              <span className="text-[10px] font-normal text-muted-foreground">(คลิกดูคำอธิบาย)</span>
+            </summary>
+            <div className="mt-2 rounded-md border border-sky-500/20 bg-sky-500/5 p-3">
+              <ul className="text-[10px] text-muted-foreground space-y-0.5 list-disc pl-4">
+                <li><span className="text-foreground/80">คู่เหรียญ</span> — เลือกจากรายการยอดนิยม (เช่น BTCUSDT) → ใช้เป็นคู่เทรดที่บอทจะติดตามราคา</li>
+                <li><span className="text-foreground/80">กำหนดเอง</span> — พิมพ์เองได้ถ้าไม่มีในรายการ (เช่น PEPEUSDT) → ค่านี้จะ override &quot;คู่เหรียญ&quot;</li>
+                <li><span className="text-foreground/80">ช่วงเวลา (Timeframe)</span> — 1m=ไว/สัญญาณเยอะ, 1h-4h=เสถียร, 1d=เทรนด์ยาว → กำหนดขนาดแท่งเทียนที่ใช้คำนวณ</li>
+                <li><span className="text-foreground/80">Polling ทุก</span> — รอบเช็คข้อมูลใหม่ (วินาที) → ยิ่งสั้นยิ่งไว แต่กิน API quota มากขึ้น</li>
+              </ul>
+            </div>
+          </details>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
             <Field label="คู่เหรียญ">
               <Select value={config.symbol} onValueChange={(v) => { if (v) onUpdate({ symbol: v, customSymbol: "" }); }}>
@@ -2205,7 +2220,21 @@ function WatcherRowImpl({
             </Field>
           </div>
 
-          {/* Strategy */}
+          {/* Step 2: Strategy */}
+          <details className="group">
+            <summary className="flex items-center gap-1 cursor-pointer list-none text-[12px] font-semibold text-violet-400 hover:text-violet-300 select-none">
+              <span className="inline-block transition-transform group-open:rotate-90">▶</span>
+              <span>ขั้นตอนที่ 2 · เลือกกลยุทธ์ (Indicator)</span>
+              <span className="text-[10px] font-normal text-muted-foreground">(คลิกดูคำอธิบาย)</span>
+            </summary>
+            <div className="mt-2 rounded-md border border-violet-500/20 bg-violet-500/5 p-3">
+              <ul className="text-[10px] text-muted-foreground space-y-0.5 list-disc pl-4">
+                <li><span className="text-foreground/80">ใส่ค่า</span> — เลือก Indicator ที่จะใช้คำนวณสัญญาณซื้อ/ขาย (เช่น EMA Cross, RSI, MACD)</li>
+                <li><span className="text-foreground/80">ทำไมต้องใส่</span> — บอทใช้กฎของกลยุทธ์นี้เพื่อตัดสินใจส่งแจ้งเตือน BUY/SELL อัตโนมัติ</li>
+                <li><span className="text-foreground/80">เคล็ดลับ</span> — ลอง Backtest (ด้านล่าง) ก่อนใช้จริง เพื่อดูว่ากลยุทธ์เหมาะกับเหรียญ+TF ที่เลือกไหม</li>
+              </ul>
+            </div>
+          </details>
           <Field label="กลยุทธ์ (Indicator)">
             <Select
               value={config.strategyId}
@@ -2227,7 +2256,28 @@ function WatcherRowImpl({
             </Select>
           </Field>
 
-          {/* Webhook */}
+          {/* Step 3: Webhook */}
+          <details className="group">
+            <summary className="flex items-center gap-1 cursor-pointer list-none text-[12px] font-semibold text-pink-400 hover:text-pink-300 select-none">
+              <span className="inline-block transition-transform group-open:rotate-90">▶</span>
+              <span>ขั้นตอนที่ 3 · ตั้งค่า Discord Webhook</span>
+              <span className="text-[10px] font-normal text-muted-foreground">(คลิกดูคำอธิบาย)</span>
+            </summary>
+            <div className="mt-2 rounded-md border border-pink-500/20 bg-pink-500/5 p-3">
+              <ul className="text-[10px] text-muted-foreground space-y-0.5 list-disc pl-4">
+                <li><span className="text-foreground/80">ใส่ค่า</span> — URL ขึ้นต้นด้วย <code className="text-foreground/90">https://discord.com/api/webhooks/...</code></li>
+                <li>
+                  <span className="text-foreground/80">ได้มาจากไหน</span> — ใน Discord:
+                  <span className="text-foreground/70"> Server Settings → Integrations → Webhooks → New Webhook → เลือกห้อง → Copy Webhook URL</span>
+                </li>
+                <li><span className="text-foreground/80">ทำไม</span> — บอทใช้ URL นี้ส่งข้อความแจ้งเตือนเข้าห้อง Discord ที่ต้องการ</li>
+                <li>
+                  <span className="text-foreground/80">ปุ่ม &quot;ทดสอบ&quot;</span> — ยิงข้อความตัวอย่างไปดูว่า URL ถูกต้องไหม |
+                  <span className="text-foreground/80"> ปุ่ม &quot;ใช้ env / ใช้ URL&quot;</span> — สลับใช้ค่าจากไฟล์ <code className="text-foreground/90">.env</code> (DISCORD_WEBHOOK_URL) แทนการกรอกตรงนี้
+                </li>
+              </ul>
+            </div>
+          </details>
           <div className="grid grid-cols-1 md:grid-cols-[1fr_auto_auto] gap-2 items-end">
             <Field label="Discord Webhook URL">
               <Input
