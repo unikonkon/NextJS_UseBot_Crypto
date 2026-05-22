@@ -1511,6 +1511,2091 @@ export function utBot(
   return { trailingStop, pos, signal };
 }
 
+// ─── Chandelier Exit ───────────────────────────────────────────
+// ATR-based trailing stop by Alex Orekhov. Direction flips when
+// price closes above shortStop[prev] or below longStop[prev].
+
+export interface ChandelierExitResult {
+  longStop: (number | null)[];
+  shortStop: (number | null)[];
+  dir: (1 | -1 | null)[];
+  signal: ("BUY" | "SELL" | null)[];
+}
+
+export function chandelierExit(
+  klines: KlineData[],
+  length = 22,
+  mult = 3.0,
+  useClose = true,
+): ChandelierExitResult {
+  const c = closes(klines);
+  const h = highs(klines);
+  const l = lows(klines);
+  const len = klines.length;
+
+  const atrArr = atr(klines, length);
+
+  const longStop: (number | null)[] = new Array(len).fill(null);
+  const shortStop: (number | null)[] = new Array(len).fill(null);
+  const dir: (1 | -1 | null)[] = new Array(len).fill(null);
+  const signal: ("BUY" | "SELL" | null)[] = new Array(len).fill(null);
+
+  let prevLongStop: number | null = null;
+  let prevShortStop: number | null = null;
+  let prevDir: 1 | -1 = 1;
+  let started = false;
+
+  for (let i = 0; i < len; i++) {
+    const a = atrArr[i];
+    if (a === null) continue;
+
+    // Highest / lowest over [i-length+1, i]
+    const start = Math.max(0, i - length + 1);
+    let hi = -Infinity, lo = Infinity;
+    for (let j = start; j <= i; j++) {
+      const hv = useClose ? c[j] : h[j];
+      const lv = useClose ? c[j] : l[j];
+      if (hv > hi) hi = hv;
+      if (lv < lo) lo = lv;
+    }
+
+    const atrVal = mult * a;
+    let curLong = hi - atrVal;
+    let curShort = lo + atrVal;
+
+    // Sticky adjustment using close[1]
+    const prevC = i > 0 ? c[i - 1] : c[i];
+    const lStopPrev = prevLongStop ?? curLong;
+    const sStopPrev = prevShortStop ?? curShort;
+
+    if (prevC > lStopPrev) curLong = Math.max(curLong, lStopPrev);
+    if (prevC < sStopPrev) curShort = Math.min(curShort, sStopPrev);
+
+    longStop[i] = curLong;
+    shortStop[i] = curShort;
+
+    let curDir: 1 | -1 = prevDir;
+    if (c[i] > sStopPrev) curDir = 1;
+    else if (c[i] < lStopPrev) curDir = -1;
+
+    dir[i] = curDir;
+
+    if (started) {
+      if (curDir === 1 && prevDir === -1) signal[i] = "BUY";
+      else if (curDir === -1 && prevDir === 1) signal[i] = "SELL";
+    }
+
+    prevLongStop = curLong;
+    prevShortStop = curShort;
+    prevDir = curDir;
+    started = true;
+  }
+
+  return { longStop, shortStop, dir, signal };
+}
+
+// ─── Tony's EMA Scalper ────────────────────────────────────────
+// Price-vs-EMA cross with a directional filter: close crossing the
+// EMA upward fires BUY; crossing downward fires SELL. Two extra
+// reference channels (highest/lowest close over 8 bars) are kept
+// for the chart overlay.
+
+export interface TonyEmaScalperResult {
+  emaLine: (number | null)[];
+  highChannel: (number | null)[];
+  lowChannel: (number | null)[];
+  signal: ("BUY" | "SELL" | null)[];
+}
+
+export function tonyEmaScalper(
+  klines: KlineData[],
+  length = 20,
+  channelLength = 8,
+): TonyEmaScalperResult {
+  const c = closes(klines);
+  const len = klines.length;
+
+  const emaLine = ema(c, length);
+  const highChannel = highest(c, channelLength);
+  const lowChannel = lowest(c, channelLength);
+
+  const signal: ("BUY" | "SELL" | null)[] = new Array(len).fill(null);
+
+  for (let i = 1; i < len; i++) {
+    const e = emaLine[i];
+    const ePrev = emaLine[i - 1];
+    if (e === null || ePrev === null) continue;
+
+    const prevDiff = c[i - 1] - ePrev;
+    const currDiff = c[i] - e;
+    const crossUp = prevDiff < 0 && currDiff >= 0;
+    const crossDown = prevDiff > 0 && currDiff <= 0;
+
+    if (crossUp) signal[i] = "BUY";
+    else if (crossDown) signal[i] = "SELL";
+  }
+
+  return { emaLine, highChannel, lowChannel, signal };
+}
+
+// ─── SuperTrend STRATEGY (KivancOzbilgic variant) ──────────────
+// Same band logic as the original Supertrend but with the
+// "Change ATR Calculation Method" flag: when true uses RMA (Wilder)
+// ATR; when false uses SMA-of-TR. Source defaults to hl2.
+
+export interface SuperTrendStrategyResult {
+  supertrend: (number | null)[];
+  trend: (1 | -1 | null)[];
+  upperBand: (number | null)[];
+  lowerBand: (number | null)[];
+  signal: ("BUY" | "SELL" | null)[];
+}
+
+export function superTrendStrategy(
+  klines: KlineData[],
+  atrPeriod = 10,
+  multiplier = 3.0,
+  changeATR = true,
+): SuperTrendStrategyResult {
+  const h = highs(klines);
+  const l = lows(klines);
+  const c = closes(klines);
+  const len = klines.length;
+
+  const tr: number[] = [];
+  for (let i = 0; i < len; i++) {
+    if (i === 0) { tr.push(h[i] - l[i]); continue; }
+    tr.push(Math.max(h[i] - l[i], Math.abs(h[i] - c[i - 1]), Math.abs(l[i] - c[i - 1])));
+  }
+
+  const atrArr: (number | null)[] = [];
+  if (changeATR) {
+    let atrPrev: number | null = null;
+    for (let i = 0; i < len; i++) {
+      if (i < atrPeriod - 1) { atrArr.push(null); continue; }
+      if (atrPrev === null) {
+        let sum = 0;
+        for (let j = i - atrPeriod + 1; j <= i; j++) sum += tr[j];
+        atrPrev = sum / atrPeriod;
+      } else {
+        atrPrev = (atrPrev * (atrPeriod - 1) + tr[i]) / atrPeriod;
+      }
+      atrArr.push(atrPrev);
+    }
+  } else {
+    for (let i = 0; i < len; i++) {
+      if (i < atrPeriod - 1) { atrArr.push(null); continue; }
+      let sum = 0;
+      for (let j = i - atrPeriod + 1; j <= i; j++) sum += tr[j];
+      atrArr.push(sum / atrPeriod);
+    }
+  }
+
+  const supertrendArr: (number | null)[] = new Array(len).fill(null);
+  const trendArr: (1 | -1 | null)[] = new Array(len).fill(null);
+  const upperBand: (number | null)[] = new Array(len).fill(null);
+  const lowerBand: (number | null)[] = new Array(len).fill(null);
+  const signal: ("BUY" | "SELL" | null)[] = new Array(len).fill(null);
+
+  let prevUp = 0;
+  let prevDn = Infinity;
+  let prevTrend: 1 | -1 = 1;
+  let started = false;
+
+  for (let i = 0; i < len; i++) {
+    const a = atrArr[i];
+    if (a === null) continue;
+
+    const src = (h[i] + l[i]) / 2;
+    let up = src - multiplier * a;
+    let dn = src + multiplier * a;
+
+    if (i > 0 && c[i - 1] > prevUp) up = Math.max(up, prevUp);
+    if (i > 0 && c[i - 1] < prevDn) dn = Math.min(dn, prevDn);
+
+    let trend: 1 | -1 = prevTrend;
+    if (prevTrend === -1 && c[i] > prevDn) trend = 1;
+    else if (prevTrend === 1 && c[i] < prevUp) trend = -1;
+
+    lowerBand[i] = up;
+    upperBand[i] = dn;
+    trendArr[i] = trend;
+    supertrendArr[i] = trend === 1 ? up : dn;
+
+    if (started) {
+      if (trend === 1 && prevTrend === -1) signal[i] = "BUY";
+      else if (trend === -1 && prevTrend === 1) signal[i] = "SELL";
+    }
+
+    prevUp = up;
+    prevDn = dn;
+    prevTrend = trend;
+    started = true;
+  }
+
+  return { supertrend: supertrendArr, trend: trendArr, upperBand, lowerBand, signal };
+}
+
+// ─── Turtle Trade Channels Indicator ───────────────────────────
+// Donchian-style channel breakout (entryLength) with a tighter
+// channel (exitLength) used for the opposite-side exit.
+
+export interface TurtleChannelsResult {
+  upper: (number | null)[];
+  lower: (number | null)[];
+  exitUpper: (number | null)[];
+  exitLower: (number | null)[];
+  trendLine: (number | null)[];
+  exitLine: (number | null)[];
+  signal: ("BUY" | "SELL" | null)[];
+}
+
+export function turtleChannels(
+  klines: KlineData[],
+  entryLength = 20,
+  exitLength = 10,
+): TurtleChannelsResult {
+  const h = highs(klines);
+  const l = lows(klines);
+  const len = klines.length;
+
+  const upper = highest(h, entryLength);
+  const lower = lowest(l, entryLength);
+  const exitUpper = highest(h, exitLength);
+  const exitLower = lowest(l, exitLength);
+
+  const trendLine: (number | null)[] = new Array(len).fill(null);
+  const exitLine: (number | null)[] = new Array(len).fill(null);
+  const signal: ("BUY" | "SELL" | null)[] = new Array(len).fill(null);
+
+  let lastUpBreakBar = -Infinity;
+  let lastDownBreakBar = -Infinity;
+  let inLong = false;
+
+  for (let i = 1; i < len; i++) {
+    const pu = upper[i - 1];
+    const pl = lower[i - 1];
+    const pel = exitLower[i - 1];
+    if (pu === null || pl === null || pel === null) continue;
+
+    if (h[i] >= pu) lastUpBreakBar = i;
+    if (l[i] <= pl) lastDownBreakBar = i;
+
+    const longInCharge = lastUpBreakBar >= lastDownBreakBar;
+    trendLine[i] = longInCharge ? lower[i] : upper[i];
+    exitLine[i] = longInCharge ? exitLower[i] : exitUpper[i];
+
+    if (!inLong && h[i] >= pu) {
+      signal[i] = "BUY";
+      inLong = true;
+    } else if (inLong && l[i] <= pel) {
+      signal[i] = "SELL";
+      inLong = false;
+    }
+  }
+
+  return { upper, lower, exitUpper, exitLower, trendLine, exitLine, signal };
+}
+
+// ─── Scalping PullBack Tool (JustUncleL) ───────────────────────
+// Price Action Channel (PAC) + EMA ribbon. Trend is bullish when
+// fast EMA and PAC low are above the medium EMA, bearish on the
+// mirror condition. A signal fires when price pulls back through
+// the PAC after a brief excursion to the opposite side.
+
+export interface ScalpingPullBackResult {
+  pacU: (number | null)[];
+  pacL: (number | null)[];
+  pacC: (number | null)[];
+  fastEMA: (number | null)[];
+  mediumEMA: (number | null)[];
+  slowEMA: (number | null)[];
+  trendDirection: (-1 | 0 | 1 | null)[];
+  signal: ("BUY" | "SELL" | null)[];
+}
+
+export function scalpingPullBack(
+  klines: KlineData[],
+  pacLength = 34,
+  fastEMALength = 89,
+  mediumEMALength = 200,
+  slowEMALength = 600,
+  lookback = 3,
+): ScalpingPullBackResult {
+  const c = closes(klines);
+  const h = highs(klines);
+  const l = lows(klines);
+  const o = klines.map(k => +k.open);
+  const len = klines.length;
+
+  const pacC = ema(c, pacLength);
+  const pacU = ema(h, pacLength);
+  const pacL = ema(l, pacLength);
+  const fastEMA = ema(c, fastEMALength);
+  const mediumEMA = ema(c, mediumEMALength);
+  const slowEMA = ema(c, slowEMALength);
+
+  const trendDirection: (-1 | 0 | 1 | null)[] = new Array(len).fill(null);
+  const signal: ("BUY" | "SELL" | null)[] = new Array(len).fill(null);
+
+  let lastBelowPacC = -Infinity;
+  let lastAbovePacC = -Infinity;
+  let tradeDirection: -1 | 0 | 1 = 0;
+
+  for (let i = 0; i < len; i++) {
+    const fe = fastEMA[i];
+    const me = mediumEMA[i];
+    const pl = pacL[i];
+    const pu = pacU[i];
+    const pc = pacC[i];
+
+    if (fe === null || me === null || pl === null || pu === null || pc === null) continue;
+
+    const td: -1 | 0 | 1 =
+      fe > me && pl > me ? 1 :
+      fe < me && pu < me ? -1 : 0;
+    trendDirection[i] = td;
+
+    const sinceBelow = i - lastBelowPacC;
+    const sinceAbove = i - lastAbovePacC;
+
+    const pacExitU = o[i] < pu && c[i] > pu && sinceBelow <= lookback;
+    const pacExitL = o[i] > pl && c[i] < pl && sinceAbove <= lookback;
+
+    const buy = td === 1 && pacExitU;
+    const sell = td === -1 && pacExitL;
+
+    const prevTD = tradeDirection;
+    if (tradeDirection === 1 && c[i] < pc) tradeDirection = 0;
+    else if (tradeDirection === -1 && c[i] > pc) tradeDirection = 0;
+    else if (tradeDirection === 0 && buy) tradeDirection = 1;
+    else if (tradeDirection === 0 && sell) tradeDirection = -1;
+
+    if (prevTD === 0 && tradeDirection === 1) signal[i] = "BUY";
+    else if (prevTD === 0 && tradeDirection === -1) signal[i] = "SELL";
+
+    if (c[i] < pc) lastBelowPacC = i;
+    if (c[i] > pc) lastAbovePacC = i;
+  }
+
+  return { pacU, pacL, pacC, fastEMA, mediumEMA, slowEMA, trendDirection, signal };
+}
+
+// ─── Trendline Breakouts With Targets (ChartPrime) ─────────────
+// Two dynamic trendlines built between consecutive pivot highs
+// (resistance, sloping down → bullish break setup) and pivot lows
+// (support, sloping up → bearish break setup). A long trade fires
+// when close crosses above a downward-sloping resistance trendline;
+// short when close crosses below an upward-sloping support
+// trendline. TP/SL = ±20 × Zband around the entry bar's extremes.
+
+export interface TrendlineBreakoutTarget {
+  index: number;
+  direction: 1 | -1;
+  entry: number;
+  tp: number;
+  sl: number;
+  hit: "tp" | "sl" | null;
+  hitIndex: number | null;
+}
+
+export interface TrendlineBreakoutsResult {
+  upperTrendline: (number | null)[];
+  lowerTrendline: (number | null)[];
+  upperSlope: (number | null)[];
+  lowerSlope: (number | null)[];
+  targets: TrendlineBreakoutTarget[];
+  signal: ("BUY" | "SELL" | null)[];
+}
+
+export function trendlineBreakouts(
+  klines: KlineData[],
+  period = 10,
+  useWicks = true,
+): TrendlineBreakoutsResult {
+  const c = closes(klines);
+  const h = highs(klines);
+  const l = lows(klines);
+  const o = klines.map(k => +k.open);
+  const len = klines.length;
+
+  const leftBars = period;
+  const rightBars = Math.max(1, Math.floor(period / 2));
+
+  const phSrc = useWicks ? h : klines.map((_, i) => (c[i] > o[i] ? c[i] : o[i]));
+  const plSrc = useWicks ? l : klines.map((_, i) => (c[i] > o[i] ? o[i] : c[i]));
+
+  const pivotHighs: (number | null)[] = new Array(len).fill(null);
+  const pivotLows: (number | null)[] = new Array(len).fill(null);
+  for (let i = leftBars; i < len - rightBars; i++) {
+    let isHigh = true, isLow = true;
+    for (let j = 1; j <= leftBars; j++) {
+      if (phSrc[i] <= phSrc[i - j]) isHigh = false;
+      if (plSrc[i] >= plSrc[i - j]) isLow = false;
+    }
+    for (let j = 1; j <= rightBars; j++) {
+      if (phSrc[i] <= phSrc[i + j]) isHigh = false;
+      if (plSrc[i] >= plSrc[i + j]) isLow = false;
+    }
+    if (isHigh) pivotHighs[i] = phSrc[i];
+    if (isLow) pivotLows[i] = plSrc[i];
+  }
+
+  const atrArr = atr(klines, 30);
+
+  const upperTrendline: (number | null)[] = new Array(len).fill(null);
+  const lowerTrendline: (number | null)[] = new Array(len).fill(null);
+  const upperSlope: (number | null)[] = new Array(len).fill(null);
+  const lowerSlope: (number | null)[] = new Array(len).fill(null);
+  const signal: ("BUY" | "SELL" | null)[] = new Array(len).fill(null);
+  const targets: TrendlineBreakoutTarget[] = [];
+
+  let prevPHBar = -1, prevPHPrice = 0;
+  let prevPLBar = -1, prevPLPrice = 0;
+  let phSlope = 0, plSlope = 0;
+  let phStartBar = -1, phStartPrice = 0;
+  let plStartBar = -1, plStartPrice = 0;
+
+  let inLong = false;
+  let entryTP = 0, entrySL = 0;
+  let activeTargetIdx = -1;
+
+  for (let i = 0; i < len; i++) {
+    // Confirm pivots after rightBars delay (no look-ahead)
+    const confirmIdx = i - rightBars;
+    if (confirmIdx >= 0) {
+      if (pivotHighs[confirmIdx] !== null) {
+        const newBar = confirmIdx;
+        const newPrice = pivotHighs[confirmIdx]!;
+        if (prevPHBar >= 0) {
+          phSlope = (newPrice - prevPHPrice) / (newBar - prevPHBar);
+          phStartBar = prevPHBar;
+          phStartPrice = prevPHPrice;
+        }
+        prevPHBar = newBar;
+        prevPHPrice = newPrice;
+      }
+      if (pivotLows[confirmIdx] !== null) {
+        const newBar = confirmIdx;
+        const newPrice = pivotLows[confirmIdx]!;
+        if (prevPLBar >= 0) {
+          plSlope = (newPrice - prevPLPrice) / (newBar - prevPLBar);
+          plStartBar = prevPLBar;
+          plStartPrice = prevPLPrice;
+        }
+        prevPLBar = newBar;
+        prevPLPrice = newPrice;
+      }
+    }
+
+    const upTL = phStartBar >= 0 ? phStartPrice + phSlope * (i - phStartBar) : null;
+    const lowTL = plStartBar >= 0 ? plStartPrice + plSlope * (i - plStartBar) : null;
+    upperTrendline[i] = upTL;
+    lowerTrendline[i] = lowTL;
+    upperSlope[i] = phStartBar >= 0 ? phSlope : null;
+    lowerSlope[i] = plStartBar >= 0 ? plSlope : null;
+
+    // Zband — volatility filter (delayed by 20 bars per Pine)
+    const refIdx = i - 20;
+    const refA = refIdx >= 0 ? (atrArr[refIdx] ?? 0) : 0;
+    const refC = refIdx >= 0 ? c[refIdx] : c[i];
+    const zband = Math.min(refA * 0.3, refC * 0.003) / 2;
+
+    if (inLong) {
+      // Long exit when TP or SL hit
+      if (h[i] >= entryTP || c[i] <= entrySL) {
+        signal[i] = "SELL";
+        if (activeTargetIdx >= 0) {
+          targets[activeTargetIdx].hit = h[i] >= entryTP ? "tp" : "sl";
+          targets[activeTargetIdx].hitIndex = i;
+        }
+        inLong = false;
+        activeTargetIdx = -1;
+      }
+    } else if (i > 0) {
+      const prevUp = phStartBar >= 0 ? phStartPrice + phSlope * (i - 1 - phStartBar) : null;
+      const prevLow = plStartBar >= 0 ? plStartPrice + plSlope * (i - 1 - plStartBar) : null;
+
+      // Long: resistance trendline sloping down, close crosses above
+      if (upTL !== null && prevUp !== null && phSlope < 0
+          && c[i - 1] < prevUp && c[i] > upTL) {
+        signal[i] = "BUY";
+        const tp = h[i] + zband * 20;
+        const sl = l[i] - zband * 20;
+        targets.push({ index: i, direction: 1, entry: c[i], tp, sl, hit: null, hitIndex: null });
+        activeTargetIdx = targets.length - 1;
+        entryTP = tp;
+        entrySL = sl;
+        inLong = true;
+      } else if (lowTL !== null && prevLow !== null && plSlope > 0
+          && c[i - 1] > prevLow - zband * 0.1 && c[i] < lowTL - zband * 0.1) {
+        // Short signal — informational only (long-only backtest)
+        targets.push({ index: i, direction: -1, entry: c[i], tp: l[i] - zband * 20, sl: h[i] + zband * 20, hit: null, hitIndex: null });
+      }
+    }
+  }
+
+  return { upperTrendline, lowerTrendline, upperSlope, lowerSlope, targets, signal };
+}
+
+// ─── Smart Money Breakout Channels (AlgoAlpha) ─────────────────
+// Volatility-based channel detection: normalize close into [0,1]
+// over normLength, take stdev to get vol, then use position of
+// vol's max vs min over (boxLength+1) bars. When upper crosses
+// above lower with sufficient duration, a channel is drawn around
+// the highest/lowest of that duration. Breakouts above/below the
+// channel produce BUY/SELL.
+
+export interface BreakoutChannel {
+  startIndex: number;
+  endIndex: number;
+  top: number;
+  bottom: number;
+  broken: boolean;
+  breakDirection: "bullish" | "bearish" | null;
+  breakIndex: number | null;
+}
+
+export interface SmartMoneyBreakoutResult {
+  channels: BreakoutChannel[];
+  upbreak: (number | null)[];
+  downbreak: (number | null)[];
+  signal: ("BUY" | "SELL" | null)[];
+}
+
+function highestBarsOffset(data: (number | null)[], period: number): (number | null)[] {
+  const result: (number | null)[] = [];
+  for (let i = 0; i < data.length; i++) {
+    if (i < period - 1) { result.push(null); continue; }
+    let bestIdx = -1, bestVal = -Infinity;
+    for (let j = 0; j < period; j++) {
+      const v = data[i - j];
+      if (v === null) continue;
+      if (v > bestVal) { bestVal = v; bestIdx = i - j; }
+    }
+    result.push(bestIdx < 0 ? null : bestIdx - i);
+  }
+  return result;
+}
+
+function lowestBarsOffset(data: (number | null)[], period: number): (number | null)[] {
+  const result: (number | null)[] = [];
+  for (let i = 0; i < data.length; i++) {
+    if (i < period - 1) { result.push(null); continue; }
+    let bestIdx = -1, bestVal = Infinity;
+    for (let j = 0; j < period; j++) {
+      const v = data[i - j];
+      if (v === null) continue;
+      if (v < bestVal) { bestVal = v; bestIdx = i - j; }
+    }
+    result.push(bestIdx < 0 ? null : bestIdx - i);
+  }
+  return result;
+}
+
+export function smartMoneyBreakoutChannels(
+  klines: KlineData[],
+  normLength = 100,
+  boxLength = 14,
+  strongCloses = true,
+  allowOverlap = false,
+): SmartMoneyBreakoutResult {
+  const c = closes(klines);
+  const h = highs(klines);
+  const l = lows(klines);
+  const o = klines.map(k => +k.open);
+  const len = klines.length;
+
+  const hh = highest(h, normLength);
+  const ll = lowest(l, normLength);
+
+  const norm: number[] = new Array(len).fill(0.5);
+  for (let i = 0; i < len; i++) {
+    const hi = hh[i], lo = ll[i];
+    if (hi !== null && lo !== null && hi !== lo) {
+      norm[i] = (c[i] - lo) / (hi - lo);
+    }
+  }
+  const volArr = stdev(norm, 14);
+
+  const upperBars = highestBarsOffset(volArr, boxLength + 1);
+  const lowerBars = lowestBarsOffset(volArr, boxLength + 1);
+
+  const upper: (number | null)[] = new Array(len).fill(null);
+  const lower: (number | null)[] = new Array(len).fill(null);
+  for (let i = 0; i < len; i++) {
+    const ub = upperBars[i];
+    const lb = lowerBars[i];
+    if (ub !== null) upper[i] = (ub + boxLength) / boxLength;
+    if (lb !== null) lower[i] = (lb + boxLength) / boxLength;
+  }
+
+  // duration since lower crossed above upper
+  let lastLowerCrossUp = -1;
+  const duration: number[] = new Array(len).fill(1);
+  for (let i = 1; i < len; i++) {
+    const lo = lower[i], up = upper[i];
+    const loPrev = lower[i - 1], upPrev = upper[i - 1];
+    if (lo !== null && up !== null && loPrev !== null && upPrev !== null) {
+      if (loPrev <= upPrev && lo > up) lastLowerCrossUp = i;
+    }
+    duration[i] = lastLowerCrossUp >= 0 ? i - lastLowerCrossUp : 1;
+  }
+
+  const channels: BreakoutChannel[] = [];
+  const upbreak: (number | null)[] = new Array(len).fill(null);
+  const downbreak: (number | null)[] = new Array(len).fill(null);
+  const signal: ("BUY" | "SELL" | null)[] = new Array(len).fill(null);
+
+  for (let i = 1; i < len; i++) {
+    const lo = lower[i], up = upper[i];
+    const loPrev = lower[i - 1], upPrev = upper[i - 1];
+
+    // crossover(upper, lower)
+    const crossUp = up !== null && lo !== null && upPrev !== null && loPrev !== null
+      && upPrev <= loPrev && up > lo;
+
+    if (crossUp && duration[i] > 10) {
+      const dur = duration[i];
+      const startIdx = Math.max(0, i - dur);
+      let boxHigh = -Infinity, boxLow = Infinity;
+      for (let j = startIdx; j <= i; j++) {
+        if (h[j] > boxHigh) boxHigh = h[j];
+        if (l[j] < boxLow) boxLow = l[j];
+      }
+      let canCreate = true;
+      if (!allowOverlap) {
+        for (const a of channels) {
+          if (a.broken) continue;
+          if (boxHigh > a.bottom && boxLow < a.top) { canCreate = false; break; }
+        }
+      }
+      if (canCreate) {
+        channels.push({
+          startIndex: startIdx,
+          endIndex: i,
+          top: boxHigh,
+          bottom: boxLow,
+          broken: false,
+          breakDirection: null,
+          breakIndex: null,
+        });
+      }
+    }
+
+    const checkPrice = strongCloses ? (c[i] + o[i]) / 2 : c[i];
+    for (const ch of channels) {
+      if (ch.broken) continue;
+      if (checkPrice > ch.top) {
+        ch.broken = true;
+        ch.breakDirection = "bullish";
+        ch.breakIndex = i;
+        upbreak[i] = ch.bottom;
+        signal[i] = "BUY";
+      } else if (checkPrice < ch.bottom) {
+        ch.broken = true;
+        ch.breakDirection = "bearish";
+        ch.breakIndex = i;
+        downbreak[i] = ch.top;
+        signal[i] = "SELL";
+      } else {
+        ch.endIndex = i;
+      }
+    }
+  }
+
+  return { channels, upbreak, downbreak, signal };
+}
+
+// ─── Support and Resistance (High Volume Boxes) [ChartPrime] ───
+// Pivot-based S/R levels filtered by directional (delta) volume.
+// Support = pivot low with strong positive volume; resistance =
+// pivot high with strong negative volume. Boxes extend by ATR(200)
+// × boxWidth. Breakouts: low crossing above (resistance + width) =
+// BUY, high crossing below (support − width) = SELL.
+
+export interface SRHighVolumeBox {
+  startIndex: number;
+  endIndex: number;
+  level: number;
+  top: number;
+  bottom: number;
+  type: "support" | "resistance";
+  volume: number;
+  broken: boolean;
+  brokenAtIndex: number | null;
+}
+
+export interface SRHighVolumeResult {
+  supportLevel: (number | null)[];
+  resistanceLevel: (number | null)[];
+  boxes: SRHighVolumeBox[];
+  signal: ("BUY" | "SELL" | null)[];
+}
+
+export function srHighVolumeBoxes(
+  klines: KlineData[],
+  lookbackPeriod = 20,
+  volLen = 2,
+  boxWidth = 1.0,
+): SRHighVolumeResult {
+  const c = closes(klines);
+  const h = highs(klines);
+  const l = lows(klines);
+  const o = klines.map(k => +k.open);
+  const v = volumes(klines);
+  const len = klines.length;
+
+  // Delta volume: sign sticky on doji
+  const deltaVol: number[] = new Array(len).fill(0);
+  let lastSign: 1 | -1 = 1;
+  for (let i = 0; i < len; i++) {
+    if (c[i] > o[i]) lastSign = 1;
+    else if (c[i] < o[i]) lastSign = -1;
+    deltaVol[i] = lastSign * v[i];
+  }
+
+  const scaled = deltaVol.map(x => x / 2.5);
+  const volHi = highest(scaled, volLen);
+  const volLo = lowest(scaled, volLen);
+
+  const pivotHighs: (number | null)[] = new Array(len).fill(null);
+  const pivotLows: (number | null)[] = new Array(len).fill(null);
+  for (let i = lookbackPeriod; i < len - lookbackPeriod; i++) {
+    let isHigh = true, isLow = true;
+    for (let j = 1; j <= lookbackPeriod; j++) {
+      if (h[i] <= h[i - j] || h[i] <= h[i + j]) isHigh = false;
+      if (l[i] >= l[i - j] || l[i] >= l[i + j]) isLow = false;
+    }
+    if (isHigh) pivotHighs[i] = h[i];
+    if (isLow) pivotLows[i] = l[i];
+  }
+
+  const atrArr = atr(klines, 200);
+
+  const supportLevel: (number | null)[] = new Array(len).fill(null);
+  const resistanceLevel: (number | null)[] = new Array(len).fill(null);
+  const signal: ("BUY" | "SELL" | null)[] = new Array(len).fill(null);
+  const boxes: SRHighVolumeBox[] = [];
+
+  let supLevel: number | null = null;
+  let supBottom: number | null = null;
+  let resLevel: number | null = null;
+  let resTop: number | null = null;
+
+  for (let i = 0; i < len; i++) {
+    // Pivot confirmation is delayed by lookbackPeriod — use confirmIdx
+    const confirmIdx = i - lookbackPeriod;
+    const a = atrArr[i] ?? 0;
+    const width = a * boxWidth;
+    const vol = deltaVol[i];
+    const vh = volHi[i] ?? 0;
+    const vl = volLo[i] ?? 0;
+
+    if (confirmIdx >= 0) {
+      if (pivotLows[confirmIdx] !== null && vol > vh) {
+        supLevel = pivotLows[confirmIdx]!;
+        supBottom = supLevel - width;
+        boxes.push({
+          startIndex: Math.max(0, confirmIdx - lookbackPeriod),
+          endIndex: i,
+          level: supLevel,
+          top: supLevel,
+          bottom: supBottom,
+          type: "support",
+          volume: vol,
+          broken: false,
+          brokenAtIndex: null,
+        });
+      }
+      if (pivotHighs[confirmIdx] !== null && vol < vl) {
+        resLevel = pivotHighs[confirmIdx]!;
+        resTop = resLevel + width;
+        boxes.push({
+          startIndex: Math.max(0, confirmIdx - lookbackPeriod),
+          endIndex: i,
+          level: resLevel,
+          top: resTop,
+          bottom: resLevel,
+          type: "resistance",
+          volume: vol,
+          broken: false,
+          brokenAtIndex: null,
+        });
+      }
+    }
+
+    supportLevel[i] = supLevel;
+    resistanceLevel[i] = resLevel;
+
+    if (i > 0) {
+      // BUY: low crosses above resistance top (resistance + width)
+      if (resLevel !== null && resTop !== null
+          && l[i - 1] < resTop && l[i] >= resTop) {
+        signal[i] = "BUY";
+        for (let bi = boxes.length - 1; bi >= 0; bi--) {
+          if (boxes[bi].type === "resistance" && !boxes[bi].broken) {
+            boxes[bi].broken = true;
+            boxes[bi].brokenAtIndex = i;
+            break;
+          }
+        }
+      }
+      // SELL: high crosses below support bottom (support − width)
+      if (supLevel !== null && supBottom !== null
+          && h[i - 1] > supBottom && h[i] <= supBottom) {
+        signal[i] = "SELL";
+        for (let bi = boxes.length - 1; bi >= 0; bi--) {
+          if (boxes[bi].type === "support" && !boxes[bi].broken) {
+            boxes[bi].broken = true;
+            boxes[bi].brokenAtIndex = i;
+            break;
+          }
+        }
+      }
+    }
+
+    // Extend last unbroken box endIndex
+    for (let bi = boxes.length - 1; bi >= 0; bi--) {
+      if (!boxes[bi].broken) boxes[bi].endIndex = i;
+    }
+  }
+
+  return { supportLevel, resistanceLevel, boxes, signal };
+}
+
+// ─── CDC Action Zone V.2 ───────────────────────────────────────
+// Piriya's 2016 version: ohlc4 source pre-smoothed by EMA(2), then
+// two EMAs (fast/slow). Four zones (green/red/yellow/blue) and a
+// signal on simple bullish/bearish crossover.
+
+export type CDCV2Zone = "green" | "red" | "yellow" | "blue" | null;
+
+export interface CDCActionZoneV2Result {
+  ap: (number | null)[];
+  fast: (number | null)[];
+  slow: (number | null)[];
+  zone: CDCV2Zone[];
+  signal: ("BUY" | "SELL" | null)[];
+}
+
+export function cdcActionZoneV2(
+  klines: KlineData[],
+  fastPeriod = 12,
+  slowPeriod = 26,
+): CDCActionZoneV2Result {
+  const len = klines.length;
+  const src = klines.map(k => (+k.open + +k.high + +k.low + +k.close) / 4);
+  const ap = ema(src, 2);
+  const apFilled = ap.map((v, i) => v ?? src[i]);
+  const fast = ema(apFilled, fastPeriod);
+  const slow = ema(apFilled, slowPeriod);
+
+  const zone: CDCV2Zone[] = [];
+  const signal: ("BUY" | "SELL" | null)[] = new Array(len).fill(null);
+
+  let prevBull: boolean | null = null;
+
+  for (let i = 0; i < len; i++) {
+    const f = fast[i], s = slow[i], p = apFilled[i];
+    if (f === null || s === null) {
+      zone.push(null);
+      continue;
+    }
+    const bullish = f > s;
+    const bearish = f < s;
+    let z: CDCV2Zone = null;
+    if (bullish && p > f) z = "green";
+    else if (bearish && p < f) z = "red";
+    else if (bullish && p < f) z = "yellow";
+    else if (bearish && p > f) z = "blue";
+    zone.push(z);
+
+    if (prevBull !== null) {
+      if (bullish && prevBull === false) signal[i] = "BUY";
+      else if (bearish && prevBull === true) signal[i] = "SELL";
+    }
+    if (bullish) prevBull = true;
+    else if (bearish) prevBull = false;
+  }
+
+  return { ap, fast, slow, zone, signal };
+}
+
+// ─── ZigZag++ (DevLucem-style) ─────────────────────────────────
+// Percent-deviation ZigZag: tracks current trend extreme, flips
+// direction when price retraces deviationPct from the extreme.
+// Backstep enforces minimum bars between adjacent swings.
+
+export interface ZigZagPoint {
+  index: number;
+  price: number;
+  type: "HH" | "LH" | "HL" | "LL" | "H" | "L";
+  direction: 1 | -1;
+}
+
+export interface ZigZagPPResult {
+  direction: (1 | -1 | null)[];
+  swingPoints: ZigZagPoint[];
+  signal: ("BUY" | "SELL" | null)[];
+}
+
+export function zigzagPlusPlus(
+  klines: KlineData[],
+  depth = 12,
+  deviationPct = 5,
+  backstep = 2,
+): ZigZagPPResult {
+  const h = highs(klines);
+  const l = lows(klines);
+  const len = klines.length;
+
+  const swingPoints: ZigZagPoint[] = [];
+  const direction: (1 | -1 | null)[] = new Array(len).fill(null);
+  const signal: ("BUY" | "SELL" | null)[] = new Array(len).fill(null);
+
+  if (len === 0) return { direction, swingPoints, signal };
+
+  // Seed: scan first `depth` bars to pick initial direction
+  let startIdx = Math.min(depth, len - 1);
+  let dir: 1 | -1 = 1;
+  let extIdx = 0, extPrice = h[0];
+  for (let i = 0; i <= startIdx; i++) {
+    if (h[i] > extPrice) { extPrice = h[i]; extIdx = i; }
+  }
+  let lastSwingBar = extIdx;
+
+  for (let i = startIdx + 1; i < len; i++) {
+    if (dir === 1) {
+      if (h[i] > extPrice) {
+        extPrice = h[i];
+        extIdx = i;
+      }
+      const flipLevel = extPrice * (1 - deviationPct / 100);
+      if (l[i] < flipLevel && (i - lastSwingBar) >= backstep) {
+        const prevH = [...swingPoints].reverse().find(sp => sp.direction === 1);
+        const t: ZigZagPoint["type"] = prevH ? (extPrice > prevH.price ? "HH" : "LH") : "H";
+        swingPoints.push({ index: extIdx, price: extPrice, type: t, direction: 1 });
+        signal[i] = "SELL";
+        dir = -1;
+        lastSwingBar = extIdx;
+        extIdx = i;
+        extPrice = l[i];
+      }
+    } else {
+      if (l[i] < extPrice) {
+        extPrice = l[i];
+        extIdx = i;
+      }
+      const flipLevel = extPrice * (1 + deviationPct / 100);
+      if (h[i] > flipLevel && (i - lastSwingBar) >= backstep) {
+        const prevL = [...swingPoints].reverse().find(sp => sp.direction === -1);
+        const t: ZigZagPoint["type"] = prevL ? (extPrice > prevL.price ? "HL" : "LL") : "L";
+        swingPoints.push({ index: extIdx, price: extPrice, type: t, direction: -1 });
+        signal[i] = "BUY";
+        dir = 1;
+        lastSwingBar = extIdx;
+        extIdx = i;
+        extPrice = h[i];
+      }
+    }
+    direction[i] = dir;
+  }
+
+  return { direction, swingPoints, signal };
+}
+
+// ─── Price Action - Smart Money Concepts (BigBeluga) ───────────
+// Pivot-based market structure (mslen) with BOS, CHoCH, optional
+// Sweep events (false break that closes back inside). Bullish CHoCH
+// emits BUY, bearish CHoCH emits SELL.
+
+export type PASMCEvent = "BOS" | "CHoCH" | "Sweep";
+
+export interface PASMCStructure {
+  index: number;
+  type: PASMCEvent;
+  bias: SMCBias;
+  level: number;
+  pivotIndex: number;
+}
+
+export interface PASMCOrderBlock {
+  startIndex: number;
+  endIndex: number;
+  high: number;
+  low: number;
+  mid: number;
+  bias: SMCBias;
+  volume: number;
+  mitigated: boolean;
+  mitigatedIndex: number | null;
+}
+
+export interface PriceActionSMCResult {
+  trend: (SMCBias | null)[];
+  structures: PASMCStructure[];
+  orderBlocks: PASMCOrderBlock[];
+  swingPoints: SMCSwingPoint[];
+  signal: ("BUY" | "SELL" | null)[];
+}
+
+export function priceActionSMC(
+  klines: KlineData[],
+  mslen = 5,
+  obLengthMode: "Length" | "Full" = "Length",
+  obLength = 5,
+  buildSweep = true,
+): PriceActionSMCResult {
+  const c = closes(klines);
+  const h = highs(klines);
+  const l = lows(klines);
+  const o = klines.map(k => +k.open);
+  const v = volumes(klines);
+  const len = klines.length;
+
+  const atrArr = atr(klines, 200);
+
+  // Pivots
+  const pivotHighs: (number | null)[] = new Array(len).fill(null);
+  const pivotLows: (number | null)[] = new Array(len).fill(null);
+  for (let i = mslen; i < len - mslen; i++) {
+    let isHigh = true, isLow = true;
+    for (let j = 1; j <= mslen; j++) {
+      if (h[i] <= h[i - j] || h[i] <= h[i + j]) isHigh = false;
+      if (l[i] >= l[i - j] || l[i] >= l[i + j]) isLow = false;
+    }
+    if (isHigh) pivotHighs[i] = h[i];
+    if (isLow) pivotLows[i] = l[i];
+  }
+
+  // Swing points labelled HH/LH/HL/LL
+  const swingPoints: SMCSwingPoint[] = [];
+  let lastHigh: number | null = null;
+  let lastLow: number | null = null;
+  for (let i = 0; i < len; i++) {
+    if (pivotHighs[i] !== null) {
+      const price = pivotHighs[i]!;
+      const t: SMCSwingPoint["type"] = lastHigh === null ? "H" : price > lastHigh ? "HH" : "LH";
+      swingPoints.push({ index: i, price, type: t });
+      lastHigh = price;
+    }
+    if (pivotLows[i] !== null) {
+      const price = pivotLows[i]!;
+      const t: SMCSwingPoint["type"] = lastLow === null ? "L" : price > lastLow ? "HL" : "LL";
+      swingPoints.push({ index: i, price, type: t });
+      lastLow = price;
+    }
+  }
+
+  const trend: (SMCBias | null)[] = new Array(len).fill(null);
+  const structures: PASMCStructure[] = [];
+  const orderBlocks: PASMCOrderBlock[] = [];
+  const signal: ("BUY" | "SELL" | null)[] = new Array(len).fill(null);
+
+  let curTrend: SMCBias | null = null;
+  let lastPH: { price: number; index: number; crossed: boolean } | null = null;
+  let lastPL: { price: number; index: number; crossed: boolean } | null = null;
+
+  const addOB = (pivotIdx: number, bias: SMCBias) => {
+    const searchEnd = pivotIdx;
+    const searchStart = Math.max(0, searchEnd - 20);
+    for (let j = searchEnd; j >= searchStart; j--) {
+      const isBullCandle = c[j] > o[j];
+      const isBearCandle = c[j] < o[j];
+      if (bias === "bullish" && isBearCandle) {
+        const a = atrArr[j] ?? 0;
+        const top = obLengthMode === "Length"
+          ? Math.min(h[j], l[j] + (obLength / 5) * a)
+          : h[j];
+        orderBlocks.push({
+          startIndex: j,
+          endIndex: j,
+          high: top,
+          low: l[j],
+          mid: (top + l[j]) / 2,
+          bias: "bullish",
+          volume: v[j],
+          mitigated: false,
+          mitigatedIndex: null,
+        });
+        return;
+      }
+      if (bias === "bearish" && isBullCandle) {
+        const a = atrArr[j] ?? 0;
+        const bottom = obLengthMode === "Length"
+          ? Math.max(l[j], h[j] - (obLength / 5) * a)
+          : l[j];
+        orderBlocks.push({
+          startIndex: j,
+          endIndex: j,
+          high: h[j],
+          low: bottom,
+          mid: (h[j] + bottom) / 2,
+          bias: "bearish",
+          volume: v[j],
+          mitigated: false,
+          mitigatedIndex: null,
+        });
+        return;
+      }
+    }
+  };
+
+  for (let i = 0; i < len; i++) {
+    if (pivotHighs[i] !== null) lastPH = { price: pivotHighs[i]!, index: i, crossed: false };
+    if (pivotLows[i] !== null) lastPL = { price: pivotLows[i]!, index: i, crossed: false };
+
+    // Sweep detection: high pokes above pivot but close back below
+    if (buildSweep && lastPH && !lastPH.crossed
+        && h[i] > lastPH.price && c[i] <= lastPH.price) {
+      structures.push({ index: i, type: "Sweep", bias: "bearish", level: lastPH.price, pivotIndex: lastPH.index });
+    }
+    if (buildSweep && lastPL && !lastPL.crossed
+        && l[i] < lastPL.price && c[i] >= lastPL.price) {
+      structures.push({ index: i, type: "Sweep", bias: "bullish", level: lastPL.price, pivotIndex: lastPL.index });
+    }
+
+    // Bullish break: close above last pivot high
+    if (lastPH && !lastPH.crossed && c[i] > lastPH.price) {
+      const t: PASMCEvent = curTrend === "bearish" ? "CHoCH" : "BOS";
+      structures.push({ index: i, type: t, bias: "bullish", level: lastPH.price, pivotIndex: lastPH.index });
+      addOB(lastPH.index, "bullish");
+      if (t === "CHoCH") signal[i] = "BUY";
+      lastPH.crossed = true;
+      curTrend = "bullish";
+    }
+    // Bearish break: close below last pivot low
+    if (lastPL && !lastPL.crossed && c[i] < lastPL.price) {
+      const t: PASMCEvent = curTrend === "bullish" ? "CHoCH" : "BOS";
+      structures.push({ index: i, type: t, bias: "bearish", level: lastPL.price, pivotIndex: lastPL.index });
+      addOB(lastPL.index, "bearish");
+      if (t === "CHoCH") signal[i] = "SELL";
+      lastPL.crossed = true;
+      curTrend = "bearish";
+    }
+
+    trend[i] = curTrend;
+
+    // Mitigate OBs (close back into the block)
+    for (const ob of orderBlocks) {
+      if (ob.mitigated) continue;
+      if (ob.bias === "bullish" && l[i] <= ob.low && i > ob.startIndex) {
+        ob.mitigated = true;
+        ob.mitigatedIndex = i;
+      } else if (ob.bias === "bearish" && h[i] >= ob.high && i > ob.startIndex) {
+        ob.mitigated = true;
+        ob.mitigatedIndex = i;
+      } else if (!ob.mitigated) {
+        ob.endIndex = i;
+      }
+    }
+  }
+
+  return { trend, structures, orderBlocks, swingPoints, signal };
+}
+
+// ─── Price Action - Support & Resistance (DGT) ─────────────────
+// Detects 3-bar consecutive bull/bear sequences as S/R levels.
+// Bull sequences produce resistance (highestHigh), bear sequences
+// produce support (lowestLow). Also flags volume spikes (vol >
+// threshold × volSMA) and high-volatility bars (range > mult ×
+// ATR). Signal: BUY when close breaks above last resistance, SELL
+// when close breaks below last support.
+
+export interface PASRLine {
+  startIndex: number;
+  endIndex: number;
+  level: number;
+  type: "support" | "resistance" | "spike" | "volatility";
+  broken: boolean;
+  brokenAtIndex: number | null;
+}
+
+export interface PriceActionSRResult {
+  supportLevel: (number | null)[];
+  resistanceLevel: (number | null)[];
+  lines: PASRLine[];
+  volumeSpikes: number[];      // bar indices flagged as volume spike
+  highVolatility: number[];    // bar indices flagged as high volatility
+  signal: ("BUY" | "SELL" | null)[];
+}
+
+export function priceActionSR(
+  klines: KlineData[],
+  volMaLength = 89,
+  volSpikeThresh = 4.669,
+  atrLength = 11,
+  atrMult = 2.718,
+  useVolume = true,
+): PriceActionSRResult {
+  const c = closes(klines);
+  const h = highs(klines);
+  const l = lows(klines);
+  const o = klines.map(k => +k.open);
+  const v = volumes(klines);
+  const len = klines.length;
+
+  const volSMA = sma(v, volMaLength);
+  const atrArr = atr(klines, atrLength);
+
+  const supportLevel: (number | null)[] = new Array(len).fill(null);
+  const resistanceLevel: (number | null)[] = new Array(len).fill(null);
+  const signal: ("BUY" | "SELL" | null)[] = new Array(len).fill(null);
+  const lines: PASRLine[] = [];
+  const volumeSpikes: number[] = [];
+  const highVolatility: number[] = [];
+
+  let sup: number | null = null;
+  let res: number | null = null;
+  let lastLine: PASRLine | null = null;
+  let lastDirState: "rising" | "falling" | null = null;
+
+  for (let i = 2; i < len; i++) {
+    const bull = c[i] > o[i];
+    const bear = c[i] < o[i];
+    const bullPrev = c[i - 1] > o[i - 1];
+    const bearPrev = c[i - 1] < o[i - 1];
+    const bull2 = c[i - 2] > o[i - 2];
+    const bear2 = c[i - 2] < o[i - 2];
+    const vsma = volSMA[i] ?? 0;
+    const a = atrArr[i] ?? 0;
+
+    const risingVol = v[i] >= v[i - 1];
+    const risingVolPrev = v[i - 1] >= v[i - 2];
+    const aboveAvg = v[i] > vsma;
+    const risingPrice = c[i] > c[i - 1];
+    const risingPricePrev = c[i - 1] > c[i - 2];
+    const risingPrice2 = c[i - 2] > c[i - 3 >= 0 ? i - 3 : i - 2];
+    const fallingPrice = c[i] < c[i - 1];
+    const fallingPricePrev = c[i - 1] < c[i - 2];
+    const fallingPrice2 = c[i - 2] < c[i - 3 >= 0 ? i - 3 : i - 2];
+
+    const rising = useVolume
+      ? bull && bullPrev && bull2 && aboveAvg && risingVol && risingVolPrev
+      : bull && bullPrev && bull2 && risingPrice && risingPricePrev && risingPrice2;
+
+    const falling = useVolume
+      ? bear && bearPrev && bear2 && aboveAvg && risingVol && risingVolPrev
+      : bear && bearPrev && bear2 && fallingPrice && fallingPricePrev && fallingPrice2;
+
+    const lwst = Math.min(l[i], l[i - 1], l[i - 2]);
+    const hst = Math.max(h[i], h[i - 1], h[i - 2]);
+
+    if (rising) {
+      res = hst;
+      if (lastDirState !== "rising" || !lastLine) {
+        lastLine = {
+          startIndex: i - 2,
+          endIndex: i,
+          level: hst,
+          type: "resistance",
+          broken: false,
+          brokenAtIndex: null,
+        };
+        lines.push(lastLine);
+      } else {
+        lastLine.endIndex = i;
+        lastLine.level = hst;
+      }
+      lastDirState = "rising";
+    } else if (falling) {
+      sup = lwst;
+      if (lastDirState !== "falling" || !lastLine) {
+        lastLine = {
+          startIndex: i - 2,
+          endIndex: i,
+          level: lwst,
+          type: "support",
+          broken: false,
+          brokenAtIndex: null,
+        };
+        lines.push(lastLine);
+      } else {
+        lastLine.endIndex = i;
+        lastLine.level = lwst;
+      }
+      lastDirState = "falling";
+    } else {
+      // Extend last line's right edge
+      if (lastLine && !lastLine.broken) lastLine.endIndex = i;
+      lastDirState = null;
+    }
+
+    // Volume spike
+    if (useVolume && vsma > 0 && v[i] > volSpikeThresh * vsma) {
+      volumeSpikes.push(i);
+      lines.push({
+        startIndex: i,
+        endIndex: Math.min(i + 30, len - 1),
+        level: bull ? h[i] : l[i],
+        type: "spike",
+        broken: false,
+        brokenAtIndex: null,
+      });
+    }
+
+    // High volatility
+    const range = Math.abs(h[i] - l[i]);
+    if (a > 0 && range > atrMult * a) {
+      highVolatility.push(i);
+      lines.push({
+        startIndex: i,
+        endIndex: Math.min(i + 30, len - 1),
+        level: bull ? h[i] : l[i],
+        type: "volatility",
+        broken: false,
+        brokenAtIndex: null,
+      });
+    }
+
+    // Signal: break of S/R level
+    if (i > 0) {
+      if (res !== null && c[i - 1] <= res && c[i] > res) {
+        signal[i] = "BUY";
+        // Mark resistance line broken
+        for (let li = lines.length - 1; li >= 0; li--) {
+          if (lines[li].type === "resistance" && !lines[li].broken) {
+            lines[li].broken = true;
+            lines[li].brokenAtIndex = i;
+            break;
+          }
+        }
+        res = null;
+      } else if (sup !== null && c[i - 1] >= sup && c[i] < sup) {
+        signal[i] = "SELL";
+        for (let li = lines.length - 1; li >= 0; li--) {
+          if (lines[li].type === "support" && !lines[li].broken) {
+            lines[li].broken = true;
+            lines[li].brokenAtIndex = i;
+            break;
+          }
+        }
+        sup = null;
+      }
+    }
+
+    supportLevel[i] = sup;
+    resistanceLevel[i] = res;
+  }
+
+  return { supportLevel, resistanceLevel, lines, volumeSpikes, highVolatility, signal };
+}
+
+// ─── Candlestick Patterns Identified (repo32) ──────────────────
+// 15 classic Japanese candlestick patterns with the trend filter
+// from the original — patterns require open[trend] above/below open.
+
+export type CandlestickPatternType =
+  | "Doji" | "BullishHarami" | "BearishHarami"
+  | "BullishEngulfing" | "BearishEngulfing"
+  | "Piercing" | "BullishBelt" | "BullishKicker" | "BearishKicker"
+  | "HangingMan" | "EveningStar" | "MorningStar"
+  | "ShootingStar" | "Hammer" | "InvertedHammer";
+
+export interface CandlestickPatternHit {
+  index: number;
+  pattern: CandlestickPatternType;
+  bias: "bullish" | "bearish" | "neutral";
+}
+
+export interface CandlestickPatternsResult {
+  hits: CandlestickPatternHit[];
+  signal: ("BUY" | "SELL" | null)[];
+}
+
+export function candlestickPatterns(
+  klines: KlineData[],
+  trendBars = 5,
+  dojiSize = 0.05,
+): CandlestickPatternsResult {
+  const c = closes(klines);
+  const h = highs(klines);
+  const l = lows(klines);
+  const o = klines.map(k => +k.open);
+  const len = klines.length;
+
+  const hits: CandlestickPatternHit[] = [];
+  const signal: ("BUY" | "SELL" | null)[] = new Array(len).fill(null);
+
+  for (let i = 2; i < len; i++) {
+    const opn = o[i], cls = c[i], hi = h[i], lo = l[i];
+    const o1 = o[i - 1], c1 = c[i - 1], h1 = h[i - 1], l1 = l[i - 1];
+    const o2 = o[i - 2], c2 = c[i - 2];
+    const ot = o[Math.max(0, i - trendBars)];
+
+    const range = hi - lo;
+    const body = Math.abs(opn - cls);
+
+    let curHit: CandlestickPatternHit | null = null;
+
+    // Doji
+    if (body <= range * dojiSize) {
+      curHit = { index: i, pattern: "Doji", bias: "neutral" };
+    }
+    // Bearish Harami
+    else if (c1 > o1 && opn > cls && opn <= c1 && o1 <= cls
+        && (opn - cls) < (c1 - o1) && ot < opn) {
+      curHit = { index: i, pattern: "BearishHarami", bias: "bearish" };
+      signal[i] = "SELL";
+    }
+    // Bullish Harami
+    else if (o1 > c1 && cls > opn && cls <= o1 && c1 <= opn
+        && (cls - opn) < (o1 - c1) && ot > opn) {
+      curHit = { index: i, pattern: "BullishHarami", bias: "bullish" };
+      signal[i] = "BUY";
+    }
+    // Bearish Engulfing
+    else if (c1 > o1 && opn > cls && opn >= c1 && o1 >= cls
+        && (opn - cls) > (c1 - o1) && ot < opn) {
+      curHit = { index: i, pattern: "BearishEngulfing", bias: "bearish" };
+      signal[i] = "SELL";
+    }
+    // Bullish Engulfing
+    else if (o1 > c1 && cls > opn && cls >= o1 && c1 >= opn
+        && (cls - opn) > (o1 - c1) && ot > opn) {
+      curHit = { index: i, pattern: "BullishEngulfing", bias: "bullish" };
+      signal[i] = "BUY";
+    }
+    // Piercing
+    else if (c1 < o1 && opn < l1 && cls > c1 + (o1 - c1) / 2 && cls < o1 && ot > opn) {
+      curHit = { index: i, pattern: "Piercing", bias: "bullish" };
+      signal[i] = "BUY";
+    }
+    // Bullish Belt
+    else if (i >= 10) {
+      let lo10 = Infinity;
+      for (let j = i - 10; j < i; j++) if (l[j] < lo10) lo10 = l[j];
+      if (lo === opn && opn < lo10 && opn < cls
+          && cls > (h1 - l1) / 2 + l1 && ot > opn) {
+        curHit = { index: i, pattern: "BullishBelt", bias: "bullish" };
+        signal[i] = "BUY";
+      }
+    }
+
+    // Bullish Kicker
+    if (!curHit && o1 > c1 && opn >= o1 && cls > opn && ot > opn) {
+      curHit = { index: i, pattern: "BullishKicker", bias: "bullish" };
+      signal[i] = "BUY";
+    }
+    // Bearish Kicker
+    if (!curHit && o1 < c1 && opn <= o1 && cls <= opn && ot < opn) {
+      curHit = { index: i, pattern: "BearishKicker", bias: "bearish" };
+      signal[i] = "SELL";
+    }
+    // Hanging Man
+    if (!curHit && i >= 2 && range > 4 * body
+        && (cls - lo) / (0.001 + range) >= 0.75
+        && (opn - lo) / (0.001 + range) >= 0.75
+        && ot < opn && h1 < opn && h[i - 2] < opn) {
+      curHit = { index: i, pattern: "HangingMan", bias: "bearish" };
+      signal[i] = "SELL";
+    }
+    // Evening Star
+    if (!curHit && c2 > o2 && Math.min(o1, c1) > c2
+        && opn < Math.min(o1, c1) && cls < opn) {
+      curHit = { index: i, pattern: "EveningStar", bias: "bearish" };
+      signal[i] = "SELL";
+    }
+    // Morning Star
+    if (!curHit && c2 < o2 && Math.max(o1, c1) < c2
+        && opn > Math.max(o1, c1) && cls > opn) {
+      curHit = { index: i, pattern: "MorningStar", bias: "bullish" };
+      signal[i] = "BUY";
+    }
+    // Shooting Star
+    if (!curHit && o1 < c1 && opn > c1
+        && hi - Math.max(opn, cls) >= body * 3
+        && Math.min(cls, opn) - lo <= body) {
+      curHit = { index: i, pattern: "ShootingStar", bias: "bearish" };
+      signal[i] = "SELL";
+    }
+    // Hammer
+    if (!curHit && range > 3 * body
+        && (cls - lo) / (0.001 + range) > 0.6
+        && (opn - lo) / (0.001 + range) > 0.6) {
+      curHit = { index: i, pattern: "Hammer", bias: "bullish" };
+      signal[i] = "BUY";
+    }
+    // Inverted Hammer
+    if (!curHit && range > 3 * body
+        && (hi - cls) / (0.001 + range) > 0.6
+        && (hi - opn) / (0.001 + range) > 0.6) {
+      curHit = { index: i, pattern: "InvertedHammer", bias: "bullish" };
+      signal[i] = "BUY";
+    }
+
+    if (curHit) hits.push(curHit);
+  }
+
+  return { hits, signal };
+}
+
+// ─── Pivot Points High Low (LuxAlgo) ───────────────────────────
+// Regular pivots + "missed" pivots (a pivot in the same direction
+// where the price never produced an opposite pivot in between).
+// Signal heuristic: BUY when a pivot low is confirmed (expect a
+// bounce up), SELL when a pivot high is confirmed.
+
+export type PPHLPivotType = "regular_high" | "regular_low" | "missed_high" | "missed_low";
+
+export interface PPHLPivot {
+  index: number;
+  price: number;
+  type: PPHLPivotType;
+}
+
+export interface PivotPointsHLResult {
+  pivots: PPHLPivot[];
+  zigzag: { index: number; price: number }[];
+  ghostLevelStart: number | null;   // start index of last "ghost" level
+  ghostLevelPrice: number | null;   // price of last "ghost" level
+  signal: ("BUY" | "SELL" | null)[];
+}
+
+export function pivotPointsHL(
+  klines: KlineData[],
+  length = 50,
+): PivotPointsHLResult {
+  const h = highs(klines);
+  const l = lows(klines);
+  const len = klines.length;
+
+  const pivots: PPHLPivot[] = [];
+  const zigzag: { index: number; price: number }[] = [];
+  const signal: ("BUY" | "SELL" | null)[] = new Array(len).fill(null);
+
+  let osDir: 0 | 1 = 0;  // 1 = up (last was pivot high), 0 = down (last was pivot low)
+  let maxRun = -Infinity, maxRunIdx = -1;
+  let minRun = Infinity, minRunIdx = -1;
+  let followMax = -Infinity, followMaxIdx = -1;
+  let followMin = Infinity, followMinIdx = -1;
+  let lastZigZagIdx = -1, lastZigZagPrice = 0;
+
+  for (let i = 0; i < len; i++) {
+    // Reference value at bar (i - length), like time[length]
+    const refIdx = i - length;
+    if (refIdx >= 0) {
+      if (h[refIdx] > maxRun) {
+        maxRun = h[refIdx];
+        maxRunIdx = refIdx;
+        followMin = l[refIdx];
+        followMinIdx = refIdx;
+      }
+      if (l[refIdx] < minRun) {
+        minRun = l[refIdx];
+        minRunIdx = refIdx;
+        followMax = h[refIdx];
+        followMaxIdx = refIdx;
+      }
+      if (l[refIdx] < followMin) {
+        followMin = l[refIdx];
+        followMinIdx = refIdx;
+      }
+      if (h[refIdx] > followMax) {
+        followMax = h[refIdx];
+        followMaxIdx = refIdx;
+      }
+    }
+
+    // Pivot detection at bar (i - length)
+    if (refIdx >= length && refIdx + length < len) {
+      let isHigh = true, isLow = true;
+      for (let j = 1; j <= length; j++) {
+        if (h[refIdx] <= h[refIdx - j] || h[refIdx] <= h[refIdx + j]) isHigh = false;
+        if (l[refIdx] >= l[refIdx - j] || l[refIdx] >= l[refIdx + j]) isLow = false;
+      }
+
+      if (isHigh) {
+        if (osDir === 1) {
+          // Missed pivot low between two highs
+          if (minRunIdx >= 0) {
+            pivots.push({ index: minRunIdx, price: minRun, type: "missed_low" });
+            zigzag.push({ index: minRunIdx, price: minRun });
+            lastZigZagIdx = minRunIdx;
+            lastZigZagPrice = minRun;
+          }
+        } else if (h[refIdx] < maxRun && maxRunIdx >= 0) {
+          // High didn't break previous max — mark missed
+          pivots.push({ index: maxRunIdx, price: maxRun, type: "missed_high" });
+          zigzag.push({ index: maxRunIdx, price: maxRun });
+          if (followMinIdx >= 0) {
+            pivots.push({ index: followMinIdx, price: followMin, type: "missed_low" });
+            zigzag.push({ index: followMinIdx, price: followMin });
+            lastZigZagIdx = followMinIdx;
+            lastZigZagPrice = followMin;
+          }
+        }
+        pivots.push({ index: refIdx, price: h[refIdx], type: "regular_high" });
+        zigzag.push({ index: refIdx, price: h[refIdx] });
+        signal[i] = "SELL";  // Confirmation at current bar i — pivot was at refIdx
+        lastZigZagIdx = refIdx;
+        lastZigZagPrice = h[refIdx];
+        maxRun = h[refIdx];
+        minRun = h[refIdx];
+        osDir = 1;
+      } else if (isLow) {
+        if (osDir === 0) {
+          if (maxRunIdx >= 0) {
+            pivots.push({ index: maxRunIdx, price: maxRun, type: "missed_high" });
+            zigzag.push({ index: maxRunIdx, price: maxRun });
+          }
+        } else if (l[refIdx] > minRun && minRunIdx >= 0) {
+          pivots.push({ index: followMaxIdx, price: followMax, type: "missed_high" });
+          zigzag.push({ index: followMaxIdx, price: followMax });
+          pivots.push({ index: minRunIdx, price: minRun, type: "missed_low" });
+          zigzag.push({ index: minRunIdx, price: minRun });
+        }
+        pivots.push({ index: refIdx, price: l[refIdx], type: "regular_low" });
+        zigzag.push({ index: refIdx, price: l[refIdx] });
+        signal[i] = "BUY";
+        lastZigZagIdx = refIdx;
+        lastZigZagPrice = l[refIdx];
+        maxRun = l[refIdx];
+        minRun = l[refIdx];
+        osDir = 0;
+      }
+    }
+  }
+
+  return {
+    pivots,
+    zigzag,
+    ghostLevelStart: lastZigZagIdx >= 0 ? lastZigZagIdx : null,
+    ghostLevelPrice: lastZigZagIdx >= 0 ? lastZigZagPrice : null,
+    signal,
+  };
+}
+
+// ─── TMA Overlay (JustUncleL / FXBuoy) ─────────────────────────
+// 4 Smoothed MAs (21, 50, 100, 200) + Trend Fill from EMA(2) vs
+// SMMA(200) + 3-Line Strike + Big-Body Engulfing detection.
+
+export interface TMAOverlayResult {
+  smma21: (number | null)[];
+  smma50: (number | null)[];
+  smma100: (number | null)[];
+  smma200: (number | null)[];
+  ema2: (number | null)[];
+  trend: ("bullish" | "bearish" | null)[];
+  threeLineStrikeBull: number[];
+  threeLineStrikeBear: number[];
+  bullishEngulfing: number[];
+  bearishEngulfing: number[];
+  signal: ("BUY" | "SELL" | null)[];
+}
+
+function smma(data: number[], period: number): (number | null)[] {
+  const result: (number | null)[] = [];
+  const seedSma = sma(data, period);
+  let prev: number | null = null;
+  for (let i = 0; i < data.length; i++) {
+    if (i < period - 1) { result.push(null); continue; }
+    if (prev === null) {
+      prev = seedSma[i] ?? data[i];
+    } else {
+      prev = (prev * (period - 1) + data[i]) / period;
+    }
+    result.push(prev);
+  }
+  return result;
+}
+
+export function tmaOverlay(klines: KlineData[]): TMAOverlayResult {
+  const c = closes(klines);
+  const o = klines.map(k => +k.open);
+  const len = klines.length;
+
+  const smma21 = smma(c, 21);
+  const smma50 = smma(c, 50);
+  const smma100 = smma(c, 100);
+  const smma200 = smma(c, 200);
+  const ema2 = ema(c, 2);
+
+  const trend: ("bullish" | "bearish" | null)[] = new Array(len).fill(null);
+  const threeLineStrikeBull: number[] = [];
+  const threeLineStrikeBear: number[] = [];
+  const bullishEngulfing: number[] = [];
+  const bearishEngulfing: number[] = [];
+  const signal: ("BUY" | "SELL" | null)[] = new Array(len).fill(null);
+
+  for (let i = 0; i < len; i++) {
+    const e = ema2[i], s200 = smma200[i];
+    if (e !== null && s200 !== null) {
+      trend[i] = e > s200 ? "bullish" : e < s200 ? "bearish" : null;
+    }
+
+    if (i >= 3) {
+      // 3-Line Strike Bull: 3 bearish then 1 bullish that closes above prev-1 open
+      const bearStrike = c[i - 3] < o[i - 3] && c[i - 2] < o[i - 2] && c[i - 1] < o[i - 1] && c[i] > o[i - 1];
+      const bullStrike = c[i - 3] > o[i - 3] && c[i - 2] > o[i - 2] && c[i - 1] > o[i - 1] && c[i] < o[i - 1];
+      if (bearStrike) {
+        threeLineStrikeBull.push(i);
+        if (trend[i] === "bullish") signal[i] = "BUY";
+      }
+      if (bullStrike) {
+        threeLineStrikeBear.push(i);
+        if (trend[i] === "bearish") signal[i] = "SELL";
+      }
+    }
+
+    if (i >= 1) {
+      // Big-body Engulfing
+      const opnP = o[i - 1], clsP = c[i - 1];
+      const bullEng = o[i] <= clsP && o[i] < opnP && c[i] > opnP;
+      const bearEng = o[i] >= clsP && o[i] > opnP && c[i] < opnP;
+      if (bullEng) {
+        bullishEngulfing.push(i);
+        if (signal[i] === null && trend[i] === "bullish") signal[i] = "BUY";
+      }
+      if (bearEng) {
+        bearishEngulfing.push(i);
+        if (signal[i] === null && trend[i] === "bearish") signal[i] = "SELL";
+      }
+    }
+  }
+
+  return {
+    smma21, smma50, smma100, smma200, ema2, trend,
+    threeLineStrikeBull, threeLineStrikeBear,
+    bullishEngulfing, bearishEngulfing, signal,
+  };
+}
+
+// ─── Auto Chart Patterns (Trendoscope) ─────────────────────────
+// Detects geometric chart patterns from the last 5 zigzag pivots:
+// channels, wedges, triangles. Bias derived from slopes; signal on
+// breakout above upper trendline (BUY) or below lower (SELL).
+
+export type ChartPatternType =
+  | "Ascending Channel" | "Descending Channel" | "Ranging Channel"
+  | "Rising Wedge (Contracting)" | "Rising Wedge (Expanding)"
+  | "Falling Wedge (Contracting)" | "Falling Wedge (Expanding)"
+  | "Ascending Triangle (Contracting)" | "Ascending Triangle (Expanding)"
+  | "Descending Triangle (Contracting)" | "Descending Triangle (Expanding)"
+  | "Converging Triangle" | "Diverging Triangle";
+
+export interface ChartPattern {
+  startIndex: number;
+  endIndex: number;
+  type: ChartPatternType;
+  pivots: { index: number; price: number; direction: 1 | -1 }[];
+  upperLine: { x1: number; y1: number; x2: number; y2: number };
+  lowerLine: { x1: number; y1: number; x2: number; y2: number };
+  bias: "bullish" | "bearish" | "neutral";
+  broken: boolean;
+  brokenAtIndex: number | null;
+  brokenDirection: "up" | "down" | null;
+}
+
+export interface AutoChartPatternsResult {
+  patterns: ChartPattern[];
+  signal: ("BUY" | "SELL" | null)[];
+}
+
+function lineFrom2Points(x1: number, y1: number, x2: number, y2: number): { slope: number; intercept: number } {
+  if (x2 === x1) return { slope: 0, intercept: y1 };
+  const slope = (y2 - y1) / (x2 - x1);
+  const intercept = y1 - slope * x1;
+  return { slope, intercept };
+}
+
+function classifyPattern(
+  pivots: { index: number; price: number; direction: 1 | -1 }[],
+  flatRatio: number,
+): ChartPatternType | null {
+  if (pivots.length < 5) return null;
+  const highs = pivots.filter(p => p.direction === 1);
+  const lows = pivots.filter(p => p.direction === -1);
+  if (highs.length < 2 || lows.length < 2) return null;
+
+  const upper = lineFrom2Points(highs[0].index, highs[0].price, highs[highs.length - 1].index, highs[highs.length - 1].price);
+  const lower = lineFrom2Points(lows[0].index, lows[0].price, lows[lows.length - 1].index, lows[lows.length - 1].price);
+
+  const avgPrice = pivots.reduce((s, p) => s + p.price, 0) / pivots.length;
+  const span = pivots[pivots.length - 1].index - pivots[0].index;
+  const upperRise = upper.slope * span;
+  const lowerRise = lower.slope * span;
+  const flatBound = avgPrice * flatRatio;
+
+  const upperFlat = Math.abs(upperRise) < flatBound;
+  const lowerFlat = Math.abs(lowerRise) < flatBound;
+  const upperUp = upperRise > 0 && !upperFlat;
+  const upperDown = upperRise < 0 && !upperFlat;
+  const lowerUp = lowerRise > 0 && !lowerFlat;
+  const lowerDown = lowerRise < 0 && !lowerFlat;
+
+  // Distance between lines at start vs end
+  const startDist = Math.abs(highs[0].price - lows[0].price);
+  const endUpperY = upper.slope * pivots[pivots.length - 1].index + upper.intercept;
+  const endLowerY = lower.slope * pivots[pivots.length - 1].index + lower.intercept;
+  const endDist = Math.abs(endUpperY - endLowerY);
+  const isContracting = endDist < startDist * 0.85;
+  const isExpanding = endDist > startDist * 1.15;
+  const isParallel = !isContracting && !isExpanding;
+
+  // Channels (parallel)
+  if (isParallel) {
+    if (upperUp && lowerUp) return "Ascending Channel";
+    if (upperDown && lowerDown) return "Descending Channel";
+    if (upperFlat && lowerFlat) return "Ranging Channel";
+  }
+
+  // Wedges (both lines same direction)
+  if (upperUp && lowerUp) {
+    return isContracting ? "Rising Wedge (Contracting)" : "Rising Wedge (Expanding)";
+  }
+  if (upperDown && lowerDown) {
+    return isContracting ? "Falling Wedge (Contracting)" : "Falling Wedge (Expanding)";
+  }
+
+  // Triangles (lines diverge in direction)
+  if (upperFlat && lowerUp) {
+    return isContracting ? "Ascending Triangle (Contracting)" : "Ascending Triangle (Expanding)";
+  }
+  if (upperUp && lowerFlat) {
+    return isContracting ? "Ascending Triangle (Contracting)" : "Ascending Triangle (Expanding)";
+  }
+  if (upperDown && lowerFlat) {
+    return isContracting ? "Descending Triangle (Contracting)" : "Descending Triangle (Expanding)";
+  }
+  if (upperFlat && lowerDown) {
+    return isContracting ? "Descending Triangle (Contracting)" : "Descending Triangle (Expanding)";
+  }
+  if (upperDown && lowerUp) return "Converging Triangle";
+  if (upperUp && lowerDown) return "Diverging Triangle";
+
+  return null;
+}
+
+function patternBias(type: ChartPatternType): "bullish" | "bearish" | "neutral" {
+  if (type.startsWith("Ascending") || type.startsWith("Falling Wedge")) return "bullish";
+  if (type.startsWith("Descending") || type.startsWith("Rising Wedge")) return "bearish";
+  return "neutral";
+}
+
+export function autoChartPatterns(
+  klines: KlineData[],
+  zigzagLength = 8,
+  flatThreshold = 0.20,
+  numberOfPivots: 5 | 6 = 5,
+  avoidOverlap = true,
+): AutoChartPatternsResult {
+  const h = highs(klines);
+  const l = lows(klines);
+  const c = closes(klines);
+  const len = klines.length;
+
+  // Bars-based pivot detection (left/right = zigzagLength)
+  const phArr: (number | null)[] = new Array(len).fill(null);
+  const plArr: (number | null)[] = new Array(len).fill(null);
+  for (let i = zigzagLength; i < len - zigzagLength; i++) {
+    let isHigh = true, isLow = true;
+    for (let j = 1; j <= zigzagLength; j++) {
+      if (h[i] <= h[i - j] || h[i] <= h[i + j]) isHigh = false;
+      if (l[i] >= l[i - j] || l[i] >= l[i + j]) isLow = false;
+    }
+    if (isHigh) phArr[i] = h[i];
+    if (isLow) plArr[i] = l[i];
+  }
+
+  // Compose zigzag pivots in chronological order
+  const allPivots: { index: number; price: number; direction: 1 | -1 }[] = [];
+  for (let i = 0; i < len; i++) {
+    if (phArr[i] !== null) allPivots.push({ index: i, price: phArr[i]!, direction: 1 });
+    if (plArr[i] !== null) allPivots.push({ index: i, price: plArr[i]!, direction: -1 });
+  }
+  // Remove same-direction consecutive (keep extreme)
+  const pivots: typeof allPivots = [];
+  for (const p of allPivots) {
+    const last = pivots[pivots.length - 1];
+    if (last && last.direction === p.direction) {
+      if ((p.direction === 1 && p.price > last.price) || (p.direction === -1 && p.price < last.price)) {
+        pivots[pivots.length - 1] = p;
+      }
+    } else {
+      pivots.push(p);
+    }
+  }
+
+  const patterns: ChartPattern[] = [];
+  const signal: ("BUY" | "SELL" | null)[] = new Array(len).fill(null);
+
+  for (let pi = numberOfPivots - 1; pi < pivots.length; pi++) {
+    const window = pivots.slice(pi - numberOfPivots + 1, pi + 1);
+    const type = classifyPattern(window, flatThreshold);
+    if (!type) continue;
+
+    const startIdx = window[0].index;
+    const confirmIdx = window[window.length - 1].index;
+
+    if (avoidOverlap) {
+      const lastPattern = patterns[patterns.length - 1];
+      if (lastPattern && startIdx < lastPattern.endIndex) continue;
+    }
+
+    const highsW = window.filter(p => p.direction === 1);
+    const lowsW = window.filter(p => p.direction === -1);
+    if (highsW.length < 2 || lowsW.length < 2) continue;
+
+    const upperLine = {
+      x1: highsW[0].index, y1: highsW[0].price,
+      x2: highsW[highsW.length - 1].index, y2: highsW[highsW.length - 1].price,
+    };
+    const lowerLine = {
+      x1: lowsW[0].index, y1: lowsW[0].price,
+      x2: lowsW[lowsW.length - 1].index, y2: lowsW[lowsW.length - 1].price,
+    };
+
+    patterns.push({
+      startIndex: startIdx,
+      endIndex: confirmIdx,
+      type,
+      pivots: window,
+      upperLine,
+      lowerLine,
+      bias: patternBias(type),
+      broken: false,
+      brokenAtIndex: null,
+      brokenDirection: null,
+    });
+  }
+
+  // Detect breakouts and emit signals
+  for (const p of patterns) {
+    const upper = lineFrom2Points(p.upperLine.x1, p.upperLine.y1, p.upperLine.x2, p.upperLine.y2);
+    const lower = lineFrom2Points(p.lowerLine.x1, p.lowerLine.y1, p.lowerLine.x2, p.lowerLine.y2);
+    const lookForward = Math.min(50, len - p.endIndex - 1);
+    for (let j = p.endIndex + 1; j <= p.endIndex + lookForward; j++) {
+      const upY = upper.slope * j + upper.intercept;
+      const loY = lower.slope * j + lower.intercept;
+      if (c[j] > upY) {
+        p.broken = true;
+        p.brokenAtIndex = j;
+        p.brokenDirection = "up";
+        if (signal[j] === null) signal[j] = "BUY";
+        break;
+      }
+      if (c[j] < loY) {
+        p.broken = true;
+        p.brokenAtIndex = j;
+        p.brokenDirection = "down";
+        if (signal[j] === null) signal[j] = "SELL";
+        break;
+      }
+    }
+  }
+
+  return { patterns, signal };
+}
+
+// ─── DIY Custom Strategy Builder (ZP) ──────────────────────────
+// Composes a leading indicator + optional confirmation filters. A
+// long entry fires when the leading indicator emits BUY and every
+// enabled filter agrees within signalExpiry bars. Same for short.
+
+export type DIYLeadingKind = "supertrend" | "cdc" | "trendlines" | "rsi" | "ut_bot";
+
+export interface DIYBuilderOptions {
+  leading: DIYLeadingKind;
+  signalExpiry: number;
+  useEma200Filter: boolean;
+  useEmaCrossFilter: boolean;     // EMA50 cross EMA200
+  useCdcZoneFilter: boolean;      // CDC zone must match
+  useTrendlinesFilter: boolean;   // Trendlines breakout in same direction
+  useRsi50Filter: boolean;        // RSI > 50 for long, < 50 for short
+}
+
+export interface DIYBuilderResult {
+  leadingSignal: ("BUY" | "SELL" | null)[];
+  filtersAgree: (boolean | null)[];
+  signal: ("BUY" | "SELL" | null)[];
+}
+
+export function diyStrategyBuilder(
+  klines: KlineData[],
+  ind: {
+    rsi: (number | null)[];
+    cdcActionZone: CDCActionZoneResult;
+    supertrend: SupertrendResult;
+    trendlines: TrendlinesResult;
+    utBot: UTBotResult;
+  },
+  options: DIYBuilderOptions,
+): DIYBuilderResult {
+  const c = closes(klines);
+  const len = klines.length;
+
+  const ema50 = ema(c, 50);
+  const ema200 = ema(c, 200);
+
+  let leading: ("BUY" | "SELL" | null)[];
+  switch (options.leading) {
+    case "cdc": leading = ind.cdcActionZone.signal; break;
+    case "trendlines": leading = ind.trendlines.signal; break;
+    case "rsi": leading = ind.rsi.map(v => v === null ? null : v < 30 ? "BUY" : v > 70 ? "SELL" : null); break;
+    case "ut_bot": leading = ind.utBot.signal; break;
+    case "supertrend":
+    default: leading = ind.supertrend.signal;
+  }
+
+  const filtersAgree: (boolean | null)[] = new Array(len).fill(null);
+  const signal: ("BUY" | "SELL" | null)[] = new Array(len).fill(null);
+
+  for (let i = 0; i < len; i++) {
+    const sig = leading[i];
+    if (sig === null) continue;
+
+    let ok = true;
+    const isBuy = sig === "BUY";
+
+    if (options.useEma200Filter) {
+      const e = ema200[i];
+      if (e === null) ok = false;
+      else if (isBuy && c[i] < e) ok = false;
+      else if (!isBuy && c[i] > e) ok = false;
+    }
+
+    if (ok && options.useEmaCrossFilter) {
+      const e50 = ema50[i], e200 = ema200[i];
+      if (e50 === null || e200 === null) ok = false;
+      else if (isBuy && e50 < e200) ok = false;
+      else if (!isBuy && e50 > e200) ok = false;
+    }
+
+    if (ok && options.useCdcZoneFilter) {
+      const z = ind.cdcActionZone.zone[i];
+      if (isBuy && z !== "green") ok = false;
+      else if (!isBuy && z !== "red") ok = false;
+    }
+
+    if (ok && options.useTrendlinesFilter) {
+      // Look back signalExpiry bars for a matching trendlines breakout
+      let foundMatch = false;
+      const start = Math.max(0, i - options.signalExpiry);
+      for (let j = start; j <= i; j++) {
+        if (ind.trendlines.signal[j] === sig) {
+          foundMatch = true;
+          break;
+        }
+      }
+      if (!foundMatch) ok = false;
+    }
+
+    if (ok && options.useRsi50Filter) {
+      const r = ind.rsi[i];
+      if (r === null) ok = false;
+      else if (isBuy && r <= 50) ok = false;
+      else if (!isBuy && r >= 50) ok = false;
+    }
+
+    filtersAgree[i] = ok;
+    if (ok) signal[i] = sig;
+  }
+
+  return { leadingSignal: leading, filtersAgree, signal };
+}
+
 // ─── Compute all indicators for klines ─────────────────────────
 export interface AllIndicators {
   rsi: (number | null)[];
@@ -1526,6 +3611,23 @@ export interface AllIndicators {
   supportResistance: SupportResistanceResult;
   trendlines: TrendlinesResult;
   utBot: UTBotResult;
+  chandelierExit: ChandelierExitResult;
+  tonyEmaScalper: TonyEmaScalperResult;
+  superTrendStrategy: SuperTrendStrategyResult;
+  turtleChannels: TurtleChannelsResult;
+  scalpingPullBack: ScalpingPullBackResult;
+  trendlineBreakouts: TrendlineBreakoutsResult;
+  smartMoneyBreakout: SmartMoneyBreakoutResult;
+  srHighVolume: SRHighVolumeResult;
+  cdcActionZoneV2: CDCActionZoneV2Result;
+  zigzagPlusPlus: ZigZagPPResult;
+  priceActionSMC: PriceActionSMCResult;
+  priceActionSR: PriceActionSRResult;
+  candlestickPatterns: CandlestickPatternsResult;
+  pivotPointsHL: PivotPointsHLResult;
+  tmaOverlay: TMAOverlayResult;
+  autoChartPatterns: AutoChartPatternsResult;
+  diyStrategyBuilder: DIYBuilderResult;
 }
 
 export function computeAll(klines: KlineData[], overrides?: {
@@ -1551,6 +3653,58 @@ export function computeAll(klines: KlineData[], overrides?: {
   trendCalcMethod?: "Atr" | "Stdev";
   utBotKey?: number;
   utBotAtrPeriod?: number;
+  ceLength?: number;
+  ceMult?: number;
+  ceUseClose?: number;       // 0 = false, 1 = true
+  tonyEmaLength?: number;
+  tonyChannelLength?: number;
+  stsAtrPeriod?: number;
+  stsMultiplier?: number;
+  stsChangeATR?: number;     // 0 = false, 1 = true
+  turtleEntryLength?: number;
+  turtleExitLength?: number;
+  spPacLength?: number;
+  spFastEMA?: number;
+  spMediumEMA?: number;
+  spSlowEMA?: number;
+  spLookback?: number;
+  tbPeriod?: number;
+  tbUseWicks?: number;       // 0 = body, 1 = wicks
+  smcboNormLength?: number;
+  smcboBoxLength?: number;
+  smcboStrongCloses?: number; // 0/1
+  smcboOverlap?: number;      // 0/1
+  srhvLookback?: number;
+  srhvVolLen?: number;
+  srhvBoxWidth?: number;
+  cdcV2Fast?: number;
+  cdcV2Slow?: number;
+  zzDepth?: number;
+  zzDeviation?: number;
+  zzBackstep?: number;
+  pasmcLen?: number;
+  pasmcObMode?: number;       // 0 = Length, 1 = Full
+  pasmcObLength?: number;
+  pasmcBuildSweep?: number;
+  pasrVolMaLength?: number;
+  pasrVolSpikeThresh?: number;
+  pasrAtrLength?: number;
+  pasrAtrMult?: number;
+  pasrUseVolume?: number;
+  cpTrendBars?: number;
+  cpDojiSize?: number;
+  pphlLength?: number;
+  acpZigzagLength?: number;
+  acpFlatThreshold?: number;
+  acpNumberOfPivots?: number;
+  acpAvoidOverlap?: number;
+  diyLeading?: number;          // 0=supertrend, 1=cdc, 2=trendlines, 3=rsi, 4=ut_bot
+  diySignalExpiry?: number;
+  diyUseEma200?: number;
+  diyUseEmaCross?: number;
+  diyUseCdcZone?: number;
+  diyUseTrendlines?: number;
+  diyUseRsi50?: number;
 }): AllIndicators {
   const c = closes(klines);
   return {
@@ -1567,5 +3721,45 @@ export function computeAll(klines: KlineData[], overrides?: {
     supportResistance: supportResistance(klines, overrides?.srLeftBars ?? 15, overrides?.srRightBars ?? 15, overrides?.srVolumeThresh ?? 20),
     trendlines: trendlinesWithBreaks(klines, overrides?.trendLength ?? 14, overrides?.trendMult ?? 1.0, overrides?.trendCalcMethod ?? "Atr"),
     utBot: utBot(klines, overrides?.utBotKey ?? 1, overrides?.utBotAtrPeriod ?? 10),
+    chandelierExit: chandelierExit(klines, overrides?.ceLength ?? 22, overrides?.ceMult ?? 3.0, (overrides?.ceUseClose ?? 1) !== 0),
+    tonyEmaScalper: tonyEmaScalper(klines, overrides?.tonyEmaLength ?? 20, overrides?.tonyChannelLength ?? 8),
+    superTrendStrategy: superTrendStrategy(klines, overrides?.stsAtrPeriod ?? 10, overrides?.stsMultiplier ?? 3.0, (overrides?.stsChangeATR ?? 1) !== 0),
+    turtleChannels: turtleChannels(klines, overrides?.turtleEntryLength ?? 20, overrides?.turtleExitLength ?? 10),
+    scalpingPullBack: scalpingPullBack(klines, overrides?.spPacLength ?? 34, overrides?.spFastEMA ?? 89, overrides?.spMediumEMA ?? 200, overrides?.spSlowEMA ?? 600, overrides?.spLookback ?? 3),
+    trendlineBreakouts: trendlineBreakouts(klines, overrides?.tbPeriod ?? 10, (overrides?.tbUseWicks ?? 1) !== 0),
+    smartMoneyBreakout: smartMoneyBreakoutChannels(klines, overrides?.smcboNormLength ?? 100, overrides?.smcboBoxLength ?? 14, (overrides?.smcboStrongCloses ?? 1) !== 0, (overrides?.smcboOverlap ?? 0) !== 0),
+    srHighVolume: srHighVolumeBoxes(klines, overrides?.srhvLookback ?? 20, overrides?.srhvVolLen ?? 2, overrides?.srhvBoxWidth ?? 1.0),
+    cdcActionZoneV2: cdcActionZoneV2(klines, overrides?.cdcV2Fast ?? 12, overrides?.cdcV2Slow ?? 26),
+    zigzagPlusPlus: zigzagPlusPlus(klines, overrides?.zzDepth ?? 12, overrides?.zzDeviation ?? 5, overrides?.zzBackstep ?? 2),
+    priceActionSMC: priceActionSMC(klines, overrides?.pasmcLen ?? 5, (overrides?.pasmcObMode ?? 0) === 1 ? "Full" : "Length", overrides?.pasmcObLength ?? 5, (overrides?.pasmcBuildSweep ?? 1) !== 0),
+    priceActionSR: priceActionSR(klines, overrides?.pasrVolMaLength ?? 89, overrides?.pasrVolSpikeThresh ?? 4.669, overrides?.pasrAtrLength ?? 11, overrides?.pasrAtrMult ?? 2.718, (overrides?.pasrUseVolume ?? 1) !== 0),
+    candlestickPatterns: candlestickPatterns(klines, overrides?.cpTrendBars ?? 5, overrides?.cpDojiSize ?? 0.05),
+    pivotPointsHL: pivotPointsHL(klines, overrides?.pphlLength ?? 50),
+    tmaOverlay: tmaOverlay(klines),
+    autoChartPatterns: autoChartPatterns(klines, overrides?.acpZigzagLength ?? 8, (overrides?.acpFlatThreshold ?? 20) / 100, (overrides?.acpNumberOfPivots ?? 5) === 6 ? 6 : 5, (overrides?.acpAvoidOverlap ?? 1) !== 0),
+    diyStrategyBuilder: (() => {
+      const leadingMap: DIYLeadingKind[] = ["supertrend", "cdc", "trendlines", "rsi", "ut_bot"];
+      const leadingIdx = overrides?.diyLeading ?? 0;
+      const stRes = supertrend(klines, overrides?.supertrendPeriod ?? 10, overrides?.supertrendMultiplier ?? 3.0);
+      const cdcRes = cdcActionZone(closes(klines), 12, 26, 1);
+      const tlRes = trendlinesWithBreaks(klines, overrides?.trendLength ?? 14, overrides?.trendMult ?? 1.0, overrides?.trendCalcMethod ?? "Atr");
+      const utRes = utBot(klines, overrides?.utBotKey ?? 1, overrides?.utBotAtrPeriod ?? 10);
+      const rsiArr = rsi(closes(klines), overrides?.rsiPeriod ?? 14);
+      return diyStrategyBuilder(klines, {
+        rsi: rsiArr,
+        cdcActionZone: cdcRes,
+        supertrend: stRes,
+        trendlines: tlRes,
+        utBot: utRes,
+      }, {
+        leading: leadingMap[Math.min(Math.max(leadingIdx, 0), 4)],
+        signalExpiry: overrides?.diySignalExpiry ?? 3,
+        useEma200Filter: (overrides?.diyUseEma200 ?? 0) !== 0,
+        useEmaCrossFilter: (overrides?.diyUseEmaCross ?? 0) !== 0,
+        useCdcZoneFilter: (overrides?.diyUseCdcZone ?? 0) !== 0,
+        useTrendlinesFilter: (overrides?.diyUseTrendlines ?? 0) !== 0,
+        useRsi50Filter: (overrides?.diyUseRsi50 ?? 1) !== 0,
+      });
+    })(),
   };
 }

@@ -408,6 +408,23 @@ function LiveTradingContent() {
         support_resistance: ind.supportResistance.signal,
         trendlines: ind.trendlines.signal,
         ut_bot: ind.utBot.signal,
+        chandelier_exit: ind.chandelierExit.signal,
+        tony_ema_scalper: ind.tonyEmaScalper.signal,
+        supertrend_strategy: ind.superTrendStrategy.signal,
+        turtle_channels: ind.turtleChannels.signal,
+        scalping_pullback: ind.scalpingPullBack.signal,
+        trendline_breakouts: ind.trendlineBreakouts.signal,
+        smart_money_breakout: ind.smartMoneyBreakout.signal,
+        sr_high_volume: ind.srHighVolume.signal,
+        cdc_actionzone_v2: ind.cdcActionZoneV2.signal,
+        zigzag_pp: ind.zigzagPlusPlus.signal,
+        price_action_smc: ind.priceActionSMC.signal,
+        price_action_sr: ind.priceActionSR.signal,
+        candlestick_patterns: ind.candlestickPatterns.signal,
+        pivot_points_hl: ind.pivotPointsHL.signal,
+        tma_overlay: ind.tmaOverlay.signal,
+        auto_chart_patterns: ind.autoChartPatterns.signal,
+        diy_strategy_builder: ind.diyStrategyBuilder.signal,
       };
 
       const signals = strategyMap[strategyId];

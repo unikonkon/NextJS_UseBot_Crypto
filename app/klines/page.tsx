@@ -68,6 +68,55 @@ const PARAM_LABELS: Record<string, string> = {
   trendMult: "Slope Mult",
   keyValue: "Key Value",
   utAtrPeriod: "ATR Period",
+  ceLength: "ATR Period",
+  ceMult: "ATR Multiplier",
+  ceUseClose: "Use Close (1/0)",
+  tonyEmaLength: "EMA Length",
+  tonyChannelLength: "Channel Length",
+  stsAtrPeriod: "ATR Period",
+  stsMultiplier: "ATR Multiplier",
+  stsChangeATR: "Use RMA (1/0)",
+  turtleEntryLength: "Entry Length",
+  turtleExitLength: "Exit Length",
+  spPacLength: "PAC Length",
+  spFastEMA: "Fast EMA",
+  spMediumEMA: "Medium EMA",
+  spSlowEMA: "Slow EMA",
+  spLookback: "Pullback Lookback",
+  tbPeriod: "Pivot Period",
+  tbUseWicks: "Use Wicks (1/0)",
+  smcboNormLength: "Norm Length",
+  smcboBoxLength: "Box Length",
+  smcboStrongCloses: "Strong Close (1/0)",
+  smcboOverlap: "Allow Overlap (1/0)",
+  srhvLookback: "Lookback Period",
+  srhvVolLen: "Volume Filter Len",
+  srhvBoxWidth: "Box Width × ATR",
+  cdcV2Fast: "Fast EMA",
+  cdcV2Slow: "Slow EMA",
+  zzDepth: "Depth",
+  zzDeviation: "Deviation %",
+  zzBackstep: "Backstep",
+  pasmcLen: "Pivot Length",
+  pasmcObLength: "OB Length",
+  pasmcBuildSweep: "Build Sweep (1/0)",
+  pasrVolMaLength: "Volume MA",
+  pasrVolSpikeThresh: "Vol Spike ×",
+  pasrAtrLength: "ATR Length",
+  pasrAtrMult: "ATR Mult",
+  cpTrendBars: "Trend Bars",
+  cpDojiSize: "Doji Size",
+  pphlLength: "Pivot Length",
+  acpZigzagLength: "ZigZag Length",
+  acpFlatThreshold: "Flat Threshold %",
+  acpNumberOfPivots: "Pivot Count (5/6)",
+  diyLeading: "Leading (0-4)",
+  diySignalExpiry: "Signal Expiry",
+  diyUseEma200: "EMA200 Filter (1/0)",
+  diyUseEmaCross: "EMA50/200 Cross (1/0)",
+  diyUseCdcZone: "CDC Zone (1/0)",
+  diyUseTrendlines: "Trendlines (1/0)",
+  diyUseRsi50: "RSI 50 (1/0)",
 };
 
 // ─── Formatting ────────────────────────────────────────────────
@@ -953,6 +1002,118 @@ export default function KlinesPage() {
                               {key === "utAtrPeriod" && "ATR Period (5-20) — ค่าน้อย=trailing stop ไว ค่ามาก=เรียบกว่า"}
                             </p>
                           )}
+                          {strategyId === "chandelier_exit" && (
+                            <p className="text-[9px] text-muted-foreground/70">
+                              {key === "ceLength" && "ATR & Highest/Lowest Period (10-30) — ค่าน้อย=stop ขยับไว ค่ามาก=เสถียร"}
+                              {key === "ceMult" && "ATR Multiplier (1.0-5.0) — ค่าน้อย=stop ใกล้ราคา สัญญาณเยอะ ค่ามาก=stop ไกล"}
+                              {key === "ceUseClose" && "1 = ใช้ Close หา High/Low สูงสุด (กรอง wick), 0 = ใช้ High/Low จริง"}
+                            </p>
+                          )}
+                          {strategyId === "tony_ema_scalper" && (
+                            <p className="text-[9px] text-muted-foreground/70">
+                              {key === "tonyEmaLength" && "EMA Period (10-50) — ค่าน้อย=สัญญาณ cross ไว ค่ามาก=เทรนด์ใหญ่"}
+                              {key === "tonyChannelLength" && "High/Low Channel (5-20) — ความยาวช่องอ้างอิงด้านบน/ล่าง"}
+                            </p>
+                          )}
+                          {strategyId === "supertrend_strategy" && (
+                            <p className="text-[9px] text-muted-foreground/70">
+                              {key === "stsAtrPeriod" && "ATR Period (5-20)"}
+                              {key === "stsMultiplier" && "ATR Multiplier (1.0-6.0)"}
+                              {key === "stsChangeATR" && "1 = ใช้ RMA Wilder ATR, 0 = ใช้ SMA ของ True Range"}
+                            </p>
+                          )}
+                          {strategyId === "turtle_channels" && (
+                            <p className="text-[9px] text-muted-foreground/70">
+                              {key === "turtleEntryLength" && "Entry Channel (10-40) — สูงสุด/ต่ำสุด N แท่งสำหรับเข้าเทรด"}
+                              {key === "turtleExitLength" && "Exit Channel (5-20) — สูงสุด/ต่ำสุด N แท่งสำหรับออก"}
+                            </p>
+                          )}
+                          {strategyId === "scalping_pullback" && (
+                            <p className="text-[9px] text-muted-foreground/70">
+                              {key === "spPacLength" && "PAC EMA (20-50) — Price Action Channel period"}
+                              {key === "spFastEMA" && "Fast EMA (50-150) — EMA สั้นในชุด Ribbon"}
+                              {key === "spMediumEMA" && "Medium EMA (100-300) — EMA กลาง = filter เทรนด์หลัก"}
+                              {key === "spLookback" && "Pullback Lookback (1-10) — จำนวนแท่งย้อนเช็คการ cross PAC"}
+                            </p>
+                          )}
+                          {strategyId === "trendline_breakouts" && (
+                            <p className="text-[9px] text-muted-foreground/70">
+                              {key === "tbPeriod" && "Pivot Period (5-30) — leftBars; rightBars = period/2"}
+                              {key === "tbUseWicks" && "1 = ใช้ wick (high/low) หา pivot, 0 = ใช้ body (open/close)"}
+                            </p>
+                          )}
+                          {strategyId === "smart_money_breakout" && (
+                            <p className="text-[9px] text-muted-foreground/70">
+                              {key === "smcboNormLength" && "Norm Length (50-200) — จำนวนแท่งสำหรับ normalize ราคา"}
+                              {key === "smcboBoxLength" && "Box Detection (5-30) — period สำหรับหาตำแหน่ง max/min ของ vol"}
+                              {key === "smcboStrongCloses" && "1 = ต้อง avg(open,close) ทะลุ box (กรอง wick), 0 = แค่ close ทะลุ"}
+                              {key === "smcboOverlap" && "1 = อนุญาตให้ channel ซ้อนกัน, 0 = ทีละ channel"}
+                            </p>
+                          )}
+                          {strategyId === "sr_high_volume" && (
+                            <p className="text-[9px] text-muted-foreground/70">
+                              {key === "srhvLookback" && "Lookback (10-50) — leftBars และ rightBars สำหรับ pivot"}
+                              {key === "srhvVolLen" && "Volume Filter Len (1-10) — ค่ามาก = กรอง box volume ต่ำได้มากขึ้น"}
+                              {key === "srhvBoxWidth" && "Box Width × ATR(200) (0.1-3.0) — ความหนาของ S/R zone"}
+                            </p>
+                          )}
+                          {strategyId === "cdc_actionzone_v2" && (
+                            <p className="text-[9px] text-muted-foreground/70">
+                              {key === "cdcV2Fast" && "Fast EMA (5-30) — รุ่น V.2 ใช้ ohlc4 + EMA(2) แล้วค่อย EMA นี้"}
+                              {key === "cdcV2Slow" && "Slow EMA (15-50) — ห่างจาก Fast มาก = สัญญาณช้าแต่กรอง noise"}
+                            </p>
+                          )}
+                          {strategyId === "zigzag_pp" && (
+                            <p className="text-[9px] text-muted-foreground/70">
+                              {key === "zzDepth" && "Depth (5-30) — bars สำหรับเริ่มจัด swing เริ่มต้น"}
+                              {key === "zzDeviation" && "Deviation % (1-15) — pullback ต่ำสุดที่จะนับว่าเป็น swing ใหม่"}
+                              {key === "zzBackstep" && "Backstep (1-10) — ระยะแท่งขั้นต่ำระหว่าง swing"}
+                            </p>
+                          )}
+                          {strategyId === "price_action_smc" && (
+                            <p className="text-[9px] text-muted-foreground/70">
+                              {key === "pasmcLen" && "Pivot Length (3-15) — leftBars และ rightBars สำหรับ pivot"}
+                              {key === "pasmcObLength" && "OB Length (1-20) — กำหนดความสูงของ Order Block (อิง ATR)"}
+                              {key === "pasmcBuildSweep" && "1 = ตรวจ Sweep (false break), 0 = ปิด"}
+                            </p>
+                          )}
+                          {strategyId === "price_action_sr" && (
+                            <p className="text-[9px] text-muted-foreground/70">
+                              {key === "pasrVolMaLength" && "Volume MA (30-200) — baseline สำหรับ volume reference"}
+                              {key === "pasrVolSpikeThresh" && "Vol Spike × (2-10) — Volume ต้องสูงกว่า MA กี่เท่าจึงเป็น spike"}
+                              {key === "pasrAtrLength" && "ATR Length (5-30) — คำนวณ ATR สำหรับ filter high volatility"}
+                              {key === "pasrAtrMult" && "ATR Mult (1.0-5.0) — range/ATR ที่จะนับว่าเป็น high volatility"}
+                            </p>
+                          )}
+                          {strategyId === "candlestick_patterns" && (
+                            <p className="text-[9px] text-muted-foreground/70">
+                              {key === "cpTrendBars" && "Trend Bars (3-15) — ดูแท่งย้อนหลังเพื่อกำหนดบริบทเทรนด์"}
+                              {key === "cpDojiSize" && "Doji Size (0.01-0.20) — body/range ratio ที่จะนับเป็น Doji"}
+                            </p>
+                          )}
+                          {strategyId === "pivot_points_hl" && (
+                            <p className="text-[9px] text-muted-foreground/70">
+                              {key === "pphlLength" && "Pivot Length (10-100) — leftBars และ rightBars ค่ามาก = pivot สำคัญแต่ช้า"}
+                            </p>
+                          )}
+                          {strategyId === "auto_chart_patterns" && (
+                            <p className="text-[9px] text-muted-foreground/70">
+                              {key === "acpZigzagLength" && "ZigZag Length (5-30) — leftBars และ rightBars สำหรับ pivot"}
+                              {key === "acpFlatThreshold" && "Flat Threshold % (5-30) — slope ใต้ค่านี้ถือว่าเส้นแนวนอน"}
+                              {key === "acpNumberOfPivots" && "Pivot Count 5 หรือ 6 — จำนวน pivot ที่ใช้สร้างแพทเทิร์น"}
+                            </p>
+                          )}
+                          {strategyId === "diy_strategy_builder" && (
+                            <p className="text-[9px] text-muted-foreground/70">
+                              {key === "diyLeading" && "0=Supertrend, 1=CDC, 2=Trendlines, 3=RSI, 4=UT Bot — ตัวที่ปล่อย signal หลัก"}
+                              {key === "diySignalExpiry" && "Signal Expiry (1-10) — กี่แท่งให้ filter อื่นยืนยันสัญญาณ"}
+                              {key === "diyUseEma200" && "1 = เปิด filter ราคาเทียบ EMA200, 0 = ปิด"}
+                              {key === "diyUseEmaCross" && "1 = ต้องการ EMA50 vs EMA200 ตรงทิศ, 0 = ปิด"}
+                              {key === "diyUseCdcZone" && "1 = ต้องการ CDC zone ตรงทิศ (green/red), 0 = ปิด"}
+                              {key === "diyUseTrendlines" && "1 = ต้องการ Trendlines breakout ตรงทิศใน window, 0 = ปิด"}
+                              {key === "diyUseRsi50" && "1 = RSI &gt; 50 สำหรับ long, &lt; 50 สำหรับ short, 0 = ปิด"}
+                            </p>
+                          )}
                         </div>
                       </Field>
                     ))}
@@ -1405,6 +1566,283 @@ export default function KlinesPage() {
                     <div className="flex flex-wrap gap-x-4 gap-y-1 text-[10px]">
                       <span className="text-emerald-500">BUY → ราคาทะลุขึ้นเหนือเส้นแนวต้าน (Upper Break)</span>
                       <span className="text-red-500">SELL → ราคาหลุดลงใต้เส้นแนวรับ (Lower Break)</span>
+                    </div>
+                  </div>
+                )}
+
+                {/* Chandelier Exit explanation */}
+                {strategyId === "chandelier_exit" && (
+                  <div className="rounded-md border border-border/50 bg-muted/30 px-3 py-2.5 space-y-2">
+                    <p className="text-[11px] font-medium text-foreground/90">Chandelier Exit คืออะไร?</p>
+                    <p className="text-[10px] text-muted-foreground leading-relaxed">
+                      ATR Trailing Stop ที่ผูกกับ Highest High / Lowest Low ในช่วง N แท่งย้อนหลัง — Long Stop = สูงสุด − ATR×mult, Short Stop = ต่ำสุด + ATR×mult
+                      ทิศทาง (dir) จะกลับเมื่อราคาปิดผ่าน stop ตรงข้าม สัญญาณเข้าเทรดเกิดที่บาร์ที่ทิศพลิก
+                    </p>
+                    <div className="flex flex-wrap gap-x-4 gap-y-1 text-[10px]">
+                      <span className="text-emerald-500">BUY → close ตัดขึ้นเหนือ Short Stop (dir = -1 → 1)</span>
+                      <span className="text-red-500">SELL → close ตัดลงใต้ Long Stop (dir = 1 → -1)</span>
+                    </div>
+                  </div>
+                )}
+
+                {/* Tony's EMA Scalper explanation */}
+                {strategyId === "tony_ema_scalper" && (
+                  <div className="rounded-md border border-border/50 bg-muted/30 px-3 py-2.5 space-y-2">
+                    <p className="text-[11px] font-medium text-foreground/90">Tony&apos;s EMA Scalper คืออะไร?</p>
+                    <p className="text-[10px] text-muted-foreground leading-relaxed">
+                      ระบบ Scalp ง่าย ๆ ใช้ EMA เป็นเส้นหลัก เมื่อราคาตัดผ่าน EMA + ทิศการเคลื่อนที่ของแท่งบ่งบอกทิศของสัญญาณ
+                      มีช่อง Highest/Lowest Close 8 แท่งเป็นเส้นอ้างอิงด้านบน/ล่าง
+                    </p>
+                    <div className="flex flex-wrap gap-x-4 gap-y-1 text-[10px]">
+                      <span className="text-emerald-500">BUY → close ตัดขึ้นเหนือ EMA (price rising)</span>
+                      <span className="text-red-500">SELL → close ตัดลงใต้ EMA (price falling)</span>
+                    </div>
+                  </div>
+                )}
+
+                {/* SuperTrend STRATEGY explanation */}
+                {strategyId === "supertrend_strategy" && (
+                  <div className="rounded-md border border-border/50 bg-muted/30 px-3 py-2.5 space-y-2">
+                    <p className="text-[11px] font-medium text-foreground/90">SuperTrend STRATEGY (Kivanc) คืออะไร?</p>
+                    <p className="text-[10px] text-muted-foreground leading-relaxed">
+                      Supertrend เวอร์ชันของ KivancOzbilgic ใช้ src = hl2 และเปิดให้เลือกวิธีคำนวณ ATR ได้
+                      ระหว่าง RMA (Wilder) แบบมาตรฐาน หรือ SMA ของ True Range ที่ราบเรียบกว่า
+                    </p>
+                    <div className="flex flex-wrap gap-x-4 gap-y-1 text-[10px]">
+                      <span className="text-emerald-500">BUY → trend พลิก -1 → 1 (close &gt; band บน)</span>
+                      <span className="text-red-500">SELL → trend พลิก 1 → -1 (close &lt; band ล่าง)</span>
+                    </div>
+                  </div>
+                )}
+
+                {/* Turtle Channels explanation */}
+                {strategyId === "turtle_channels" && (
+                  <div className="rounded-md border border-border/50 bg-muted/30 px-3 py-2.5 space-y-2">
+                    <p className="text-[11px] font-medium text-foreground/90">Turtle Trade Channels คืออะไร?</p>
+                    <p className="text-[10px] text-muted-foreground leading-relaxed">
+                      Donchian Channel Breakout — เข้าเทรดเมื่อราคาทะลุสูงสุด/ต่ำสุดในช่วง Entry Length
+                      และออกเมื่อราคาหลุดช่องที่แคบกว่า (Exit Length) เป็นแก่นกลยุทธ์ Turtle Traders ดั้งเดิม
+                    </p>
+                    <div className="flex flex-wrap gap-x-4 gap-y-1 text-[10px]">
+                      <span className="text-emerald-500">BUY → high ทะลุสูงสุด N แท่งย้อนหลัง</span>
+                      <span className="text-red-500">SELL → low หลุดต่ำสุด M แท่งย้อนหลัง (Long Exit)</span>
+                    </div>
+                  </div>
+                )}
+
+                {/* Candlestick Patterns explanation */}
+                {strategyId === "candlestick_patterns" && (
+                  <div className="rounded-md border border-border/50 bg-muted/30 px-3 py-2.5 space-y-2">
+                    <p className="text-[11px] font-medium text-foreground/90">Candlestick Patterns Identified คืออะไร?</p>
+                    <p className="text-[10px] text-muted-foreground leading-relaxed">
+                      ตรวจจับแพทเทิร์น Candlestick คลาสสิก 15 แบบ — Doji, Bull/Bear Harami, Bull/Bear Engulfing,
+                      Piercing, Bull Belt, Bull/Bear Kicker, Hanging Man, Morning/Evening Star, Shooting Star, Hammer, Inverted Hammer
+                      โดยมี trend filter ดูแท่งย้อนหลังเพื่อยืนยันบริบทขาขึ้น/ลง
+                    </p>
+                    <div className="flex flex-wrap gap-x-4 gap-y-1 text-[10px]">
+                      <span className="text-emerald-500">BUY → แพทเทิร์น bullish (Bullish Harami, Bullish Engulfing, Hammer, ฯลฯ)</span>
+                      <span className="text-red-500">SELL → แพทเทิร์น bearish (Bearish Engulfing, Shooting Star, Hanging Man, ฯลฯ)</span>
+                    </div>
+                  </div>
+                )}
+
+                {/* Pivot Points HL explanation */}
+                {strategyId === "pivot_points_hl" && (
+                  <div className="rounded-md border border-border/50 bg-muted/30 px-3 py-2.5 space-y-2">
+                    <p className="text-[11px] font-medium text-foreground/90">Pivot Points HL (LuxAlgo) คืออะไร?</p>
+                    <p className="text-[10px] text-muted-foreground leading-relaxed">
+                      ตรวจจับ pivot high/low ปกติ + missed pivots (จุดที่ price ไปถึง แต่ไม่มี pivot สลับฝั่งคั่นกลาง — 👻)
+                      ใช้ Length ทั้งซ้ายและขวาในการยืนยัน — sigal เกิดที่บาร์ที่ยืนยัน pivot (ช้ากว่าจุด pivot จริง Length แท่ง)
+                    </p>
+                    <div className="flex flex-wrap gap-x-4 gap-y-1 text-[10px]">
+                      <span className="text-emerald-500">BUY → ยืนยัน pivot low (คาดเด้งขึ้น)</span>
+                      <span className="text-red-500">SELL → ยืนยัน pivot high (คาดถอยลง)</span>
+                    </div>
+                  </div>
+                )}
+
+                {/* TMA Overlay explanation */}
+                {strategyId === "tma_overlay" && (
+                  <div className="rounded-md border border-border/50 bg-muted/30 px-3 py-2.5 space-y-2">
+                    <p className="text-[11px] font-medium text-foreground/90">TMA Overlay คืออะไร?</p>
+                    <p className="text-[10px] text-muted-foreground leading-relaxed">
+                      ระบบ Forex/Scalping ดั้งเดิม — 4 SMMA (21/50/100/200) ดูเทรนด์, 3-Line Strike จับจุดกลับเทรนด์,
+                      Big-Body Engulfing ยืนยันแรงเข้า โดยใช้ EMA(2) vs SMMA(200) เป็นตัวกำหนดเทรนด์หลัก
+                    </p>
+                    <div className="flex flex-wrap gap-x-4 gap-y-1 text-[10px]">
+                      <span className="text-emerald-500">BUY → 3-Line Strike Bull หรือ Bull Engulfing ขณะอยู่ในเทรนด์ขาขึ้น</span>
+                      <span className="text-red-500">SELL → 3-Line Strike Bear หรือ Bear Engulfing ขณะอยู่ในเทรนด์ขาลง</span>
+                    </div>
+                  </div>
+                )}
+
+                {/* Auto Chart Patterns explanation */}
+                {strategyId === "auto_chart_patterns" && (
+                  <div className="rounded-md border border-border/50 bg-muted/30 px-3 py-2.5 space-y-2">
+                    <p className="text-[11px] font-medium text-foreground/90">Auto Chart Patterns (Trendoscope) คืออะไร?</p>
+                    <p className="text-[10px] text-muted-foreground leading-relaxed">
+                      ใช้ pivot 5-6 จุดล่าสุดสร้าง trend lines บน/ล่าง แล้วจำแนกแพทเทิร์น 13 ชนิด — Channels (Ascending/Descending/Ranging),
+                      Wedges (Rising/Falling × Contracting/Expanding), Triangles (Ascending/Descending/Converging/Diverging)
+                    </p>
+                    <div className="flex flex-wrap gap-x-4 gap-y-1 text-[10px]">
+                      <span className="text-emerald-500">BUY → close ทะลุขึ้นเหนือเส้น upper หลังแพทเทิร์นเสร็จ</span>
+                      <span className="text-red-500">SELL → close หลุดลงใต้เส้น lower หลังแพทเทิร์นเสร็จ</span>
+                    </div>
+                  </div>
+                )}
+
+                {/* DIY Strategy Builder explanation */}
+                {strategyId === "diy_strategy_builder" && (
+                  <div className="rounded-md border border-border/50 bg-muted/30 px-3 py-2.5 space-y-2">
+                    <p className="text-[11px] font-medium text-foreground/90">DIY Custom Strategy Builder (ZP) คืออะไร?</p>
+                    <p className="text-[10px] text-muted-foreground leading-relaxed">
+                      ตัว composer ผสมระหว่าง <span className="text-foreground/80">leading indicator</span> (ตัวที่ส่งสัญญาณหลัก)
+                      กับ <span className="text-foreground/80">confirmation filters</span> (ตัวกรองที่ต้องเห็นด้วย)
+                      เปิด/ปิดแต่ละ filter ได้อิสระ — signal เกิดเมื่อ leading ส่ง BUY/SELL และทุก filter ที่เปิดเห็นด้วย
+                    </p>
+                    <div className="flex flex-wrap gap-x-4 gap-y-1 text-[10px]">
+                      <span className="text-emerald-500">BUY → leading BUY + filter ทั้งหมดเห็นด้วย</span>
+                      <span className="text-red-500">SELL → leading SELL + filter ทั้งหมดเห็นด้วย</span>
+                    </div>
+                    <div className="text-[10px] text-muted-foreground">
+                      Leading: 0=Supertrend, 1=CDC ActionZone, 2=Trendlines, 3=RSI(&lt;30/&gt;70), 4=UT Bot
+                    </div>
+                  </div>
+                )}
+
+                {/* CDC V.2 explanation */}
+                {strategyId === "cdc_actionzone_v2" && (
+                  <div className="rounded-md border border-border/50 bg-muted/30 px-3 py-2.5 space-y-2">
+                    <p className="text-[11px] font-medium text-foreground/90">CDC ActionZone V.2 (Piriya 2016) คืออะไร?</p>
+                    <p className="text-[10px] text-muted-foreground leading-relaxed">
+                      รุ่นต้นแบบของ CDC ActionZone ใช้ <span className="text-foreground/80">ohlc4</span> เป็น source แล้วทำ pre-smoothing ด้วย EMA(2)
+                      ก่อนนำไปคำนวณ Fast/Slow EMA — ระบบโซน 4 สี (green/red/yellow/blue) แทน V3 ที่มี 6 สี
+                    </p>
+                    <div className="flex flex-wrap gap-x-4 gap-y-1 text-[10px]">
+                      <span className="text-emerald-500">BUY → Fast ตัดขึ้นเหนือ Slow (bullish cross)</span>
+                      <span className="text-red-500">SELL → Fast ตัดลงใต้ Slow (bearish cross)</span>
+                    </div>
+                    <div className="text-[10px] text-muted-foreground">
+                      Green=Bull+Price&gt;Fast, Red=Bear+Price&lt;Fast, Yellow=Bull+Price&lt;Fast (pullback), Blue=Bear+Price&gt;Fast (rally)
+                    </div>
+                  </div>
+                )}
+
+                {/* ZigZag++ explanation */}
+                {strategyId === "zigzag_pp" && (
+                  <div className="rounded-md border border-border/50 bg-muted/30 px-3 py-2.5 space-y-2">
+                    <p className="text-[11px] font-medium text-foreground/90">ZigZag++ (DevLucem) คืออะไร?</p>
+                    <p className="text-[10px] text-muted-foreground leading-relaxed">
+                      ZigZag classic ที่ติดป้าย swing ด้วย HH/LH/HL/LL — กลับทิศเมื่อราคา retrace
+                      เกิน Deviation % จากจุด extreme ปัจจุบัน Backstep บังคับระยะห่างขั้นต่ำระหว่าง swing
+                    </p>
+                    <div className="flex flex-wrap gap-x-4 gap-y-1 text-[10px]">
+                      <span className="text-emerald-500">BUY → ทิศกลับขึ้น (จาก downtrend เป็น uptrend)</span>
+                      <span className="text-red-500">SELL → ทิศกลับลง (จาก uptrend เป็น downtrend)</span>
+                    </div>
+                    <div className="text-[10px] text-muted-foreground">
+                      ZigZag เป็น lagging indicator — สัญญาณจะเกิดที่บาร์ที่ยืนยัน swing แล้ว ไม่ใช่ที่ swing เอง
+                    </div>
+                  </div>
+                )}
+
+                {/* Price Action SMC explanation */}
+                {strategyId === "price_action_smc" && (
+                  <div className="rounded-md border border-border/50 bg-muted/30 px-3 py-2.5 space-y-2">
+                    <p className="text-[11px] font-medium text-foreground/90">Price Action SMC (BigBeluga) คืออะไร?</p>
+                    <p className="text-[10px] text-muted-foreground leading-relaxed">
+                      Smart Money Concepts โดย BigBeluga — ตรวจ pivot ด้วย mslen แล้วบันทึก BOS/CHoCH
+                      สร้าง Order Block จากแท่งฝั่งตรงข้ามก่อนเกิด break ส่วน Sweep ตรวจจับ false break (ทะลุแต่ปิดกลับ)
+                    </p>
+                    <div className="flex flex-wrap gap-x-4 gap-y-1 text-[10px]">
+                      <span className="text-emerald-500">BUY → Bullish CHoCH (เปลี่ยนเทรนด์เป็นขาขึ้น)</span>
+                      <span className="text-red-500">SELL → Bearish CHoCH (เปลี่ยนเทรนด์เป็นขาลง)</span>
+                    </div>
+                    <div className="text-[10px] text-muted-foreground">
+                      BOS = ยืนยันเทรนด์เดิม, CHoCH = เปลี่ยนเทรนด์, Sweep = false break (ดูดทุน stop loss)
+                    </div>
+                  </div>
+                )}
+
+                {/* Price Action S&R explanation */}
+                {strategyId === "price_action_sr" && (
+                  <div className="rounded-md border border-border/50 bg-muted/30 px-3 py-2.5 space-y-2">
+                    <p className="text-[11px] font-medium text-foreground/90">Price Action S&amp;R (DGT) คืออะไร?</p>
+                    <p className="text-[10px] text-muted-foreground leading-relaxed">
+                      ตรวจหา 3 แท่งติดต่อ (bull/bear) พร้อม volume เพิ่ม = S/R ที่มีนัยสำคัญ
+                      ลำดับ bull 3 แท่ง → resistance ที่ highestHigh, bear 3 แท่ง → support ที่ lowestLow
+                      ยังตรวจ Volume Spike (🚦) และ High Volatility (⚡) เป็น marker
+                    </p>
+                    <div className="flex flex-wrap gap-x-4 gap-y-1 text-[10px]">
+                      <span className="text-emerald-500">BUY → close ทะลุเหนือ Resistance ล่าสุด</span>
+                      <span className="text-red-500">SELL → close หลุดต่ำกว่า Support ล่าสุด</span>
+                    </div>
+                  </div>
+                )}
+
+                {/* Trendline Breakouts explanation */}
+                {strategyId === "trendline_breakouts" && (
+                  <div className="rounded-md border border-border/50 bg-muted/30 px-3 py-2.5 space-y-2">
+                    <p className="text-[11px] font-medium text-foreground/90">Trendline Breakouts With Targets (ChartPrime) คืออะไร?</p>
+                    <p className="text-[10px] text-muted-foreground leading-relaxed">
+                      สร้างเส้นเทรนด์จาก pivot 2 จุดต่อเนื่อง — เส้นบน (resistance) จาก pivot high, เส้นล่าง (support) จาก pivot low
+                      เข้าเทรดเมื่อราคาทะลุเส้นที่ลาดทวนทิศ (เช่น breakout ขึ้นผ่าน resistance ที่ลาดลง = bullish)
+                      เป้าหมาย TP/SL คำนวณจาก Zband (อิง ATR(30) และราคา ปรับให้เหมาะกับความผันผวน)
+                    </p>
+                    <div className="flex flex-wrap gap-x-4 gap-y-1 text-[10px]">
+                      <span className="text-emerald-500">BUY → close ทะลุเส้นแนวต้านที่ลาดลง (slope &lt; 0)</span>
+                      <span className="text-red-500">SELL → ราคาแตะ TP หรือ SL ของ long ที่ถืออยู่</span>
+                    </div>
+                    <div className="text-[10px] text-muted-foreground">
+                      TP = high entry + 20 × Zband, SL = low entry − 20 × Zband (สำหรับ long)
+                    </div>
+                  </div>
+                )}
+
+                {/* Smart Money Breakout Channels explanation */}
+                {strategyId === "smart_money_breakout" && (
+                  <div className="rounded-md border border-border/50 bg-muted/30 px-3 py-2.5 space-y-2">
+                    <p className="text-[11px] font-medium text-foreground/90">Smart Money Breakout Channels (AlgoAlpha) คืออะไร?</p>
+                    <p className="text-[10px] text-muted-foreground leading-relaxed">
+                      ตรวจจับช่วงราคา consolidation ด้วยการ normalize ราคาแล้วใช้ stdev เป็นตัววัด — เมื่อเข้าสู่ช่วง compression ได้นานพอ
+                      จะวาด channel ครอบช่วงนั้น เมื่อราคาทะลุกรอบ = สัญญาณ breakout
+                    </p>
+                    <div className="flex flex-wrap gap-x-4 gap-y-1 text-[10px]">
+                      <span className="text-emerald-500">BUY → ราคาทะลุขึ้นเหนือ channel top</span>
+                      <span className="text-red-500">SELL → ราคาหลุดลงใต้ channel bottom</span>
+                    </div>
+                    <div className="text-[10px] text-muted-foreground">
+                      Strong Closes = ใช้ avg(open,close) แทน close ในการเช็ค breakout เพื่อกรอง wick
+                    </div>
+                  </div>
+                )}
+
+                {/* SR High Volume Boxes explanation */}
+                {strategyId === "sr_high_volume" && (
+                  <div className="rounded-md border border-border/50 bg-muted/30 px-3 py-2.5 space-y-2">
+                    <p className="text-[11px] font-medium text-foreground/90">S/R High Volume Boxes (ChartPrime) คืออะไร?</p>
+                    <p className="text-[10px] text-muted-foreground leading-relaxed">
+                      หา pivot high/low ที่มี <span className="text-emerald-500">Delta Volume</span> ผ่าน threshold = ระดับ S/R ที่มีนัยสำคัญ
+                      Support = pivot low + volume เป็นบวก (แรงซื้อ), Resistance = pivot high + volume เป็นลบ (แรงขาย) — สร้างเป็น box หนา ATR(200) × Width
+                    </p>
+                    <div className="flex flex-wrap gap-x-4 gap-y-1 text-[10px]">
+                      <span className="text-emerald-500">BUY → low ทะลุขึ้นเหนือ top ของ resistance box</span>
+                      <span className="text-red-500">SELL → high หลุดลงใต้ bottom ของ support box</span>
+                    </div>
+                  </div>
+                )}
+
+                {/* Scalping PullBack explanation */}
+                {strategyId === "scalping_pullback" && (
+                  <div className="rounded-md border border-border/50 bg-muted/30 px-3 py-2.5 space-y-2">
+                    <p className="text-[11px] font-medium text-foreground/90">Scalping PullBack Tool (JustUncleL) คืออะไร?</p>
+                    <p className="text-[10px] text-muted-foreground leading-relaxed">
+                      ใช้ EMA ribbon (fast/medium/slow) ร่วมกับ Price Action Channel (PAC) — เทรนด์เป็นขาขึ้นเมื่อ fast EMA และ PAC low อยู่เหนือ medium EMA
+                      สัญญาณเกิดเมื่อราคาย่อ (pullback) ผ่าน PAC ฝั่งตรงข้าม แล้วกลับมาฝั่งเดิมตามเทรนด์
+                    </p>
+                    <div className="flex flex-wrap gap-x-4 gap-y-1 text-[10px]">
+                      <span className="text-emerald-500">BUY → เทรนด์ขาขึ้น + ราคา pullback ผ่าน PAC แล้วกลับขึ้นเหนือ PAC upper</span>
+                      <span className="text-red-500">SELL → เทรนด์ขาลง + ราคา pullback ผ่าน PAC แล้วกลับลงใต้ PAC lower</span>
                     </div>
                   </div>
                 )}

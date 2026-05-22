@@ -47,7 +47,24 @@ export type StrategyId =
   | "msb_ob"
   | "support_resistance"
   | "trendlines"
-  | "ut_bot";
+  | "ut_bot"
+  | "chandelier_exit"
+  | "tony_ema_scalper"
+  | "supertrend_strategy"
+  | "turtle_channels"
+  | "scalping_pullback"
+  | "trendline_breakouts"
+  | "smart_money_breakout"
+  | "sr_high_volume"
+  | "cdc_actionzone_v2"
+  | "zigzag_pp"
+  | "price_action_smc"
+  | "price_action_sr"
+  | "candlestick_patterns"
+  | "pivot_points_hl"
+  | "tma_overlay"
+  | "auto_chart_patterns"
+  | "diy_strategy_builder";
 
 export interface StrategyConfig {
   id: StrategyId;
@@ -127,6 +144,125 @@ export const STRATEGIES: StrategyConfig[] = [
     descriptionEn: "ATR Trailing Stop — Buy when price crosses above trailing stop, Sell when crosses below",
     descriptionTh: "ATR Trailing Stop — ซื้อ เมื่อราคาข้ามขึ้นเหนือ trailing stop, ขาย เมื่อราคาข้ามลง",
     params: { keyValue: 1, utAtrPeriod: 10 },
+  },
+  {
+    id: "chandelier_exit",
+    name: "Chandelier Exit",
+    descriptionEn: "ATR trailing stops — Buy on direction flip up, Sell on direction flip down",
+    descriptionTh: "ATR Trailing Stop ทั้งสองฝั่ง — ซื้อ เมื่อทิศกลับขึ้น, ขาย เมื่อทิศกลับลง",
+    params: { ceLength: 22, ceMult: 3.0, ceUseClose: 1 },
+  },
+  {
+    id: "tony_ema_scalper",
+    name: "Tony's EMA Scalper",
+    descriptionEn: "EMA cross with direction filter — Buy on bullish cross, Sell on bearish cross",
+    descriptionTh: "ราคาตัด EMA พร้อมกรองทิศ — ซื้อ เมื่อราคาตัดขึ้นเหนือ EMA, ขาย เมื่อราคาตัดลงใต้ EMA",
+    params: { tonyEmaLength: 20, tonyChannelLength: 8 },
+  },
+  {
+    id: "supertrend_strategy",
+    name: "SuperTrend STRATEGY (Kivanc)",
+    descriptionEn: "Supertrend with selectable ATR method — Buy on trend flip up, Sell on trend flip down",
+    descriptionTh: "Supertrend (เลือกวิธี ATR ได้) — ซื้อ เมื่อเทรนด์เปลี่ยนเป็นขาขึ้น, ขาย เมื่อเปลี่ยนเป็นขาลง",
+    params: { stsAtrPeriod: 10, stsMultiplier: 3.0, stsChangeATR: 1 },
+  },
+  {
+    id: "turtle_channels",
+    name: "Turtle Trade Channels",
+    descriptionEn: "Donchian channel breakout — Buy on new N-bar high, Sell on N-bar low exit",
+    descriptionTh: "Channel Breakout แบบ Turtle — ซื้อ เมื่อทะลุ High N แท่ง, ขาย เมื่อหลุด Low N แท่ง",
+    params: { turtleEntryLength: 20, turtleExitLength: 10 },
+  },
+  {
+    id: "scalping_pullback",
+    name: "Scalping PullBack Tool (JustUncleL)",
+    descriptionEn: "EMA ribbon + PAC pullback — Buy on bullish pullback recovery, Sell on bearish pullback recovery",
+    descriptionTh: "EMA Ribbon + PAC Pullback — ซื้อ เมื่อ pullback กลับขึ้นในเทรนด์ขาขึ้น, ขาย เมื่อ pullback กลับลงในเทรนด์ขาลง",
+    params: { spPacLength: 34, spFastEMA: 89, spMediumEMA: 200, spLookback: 3 },
+  },
+  {
+    id: "trendline_breakouts",
+    name: "Trendline Breakouts w/ Targets (ChartPrime)",
+    descriptionEn: "Pivot trendline breakouts with ATR-based TP/SL — Buy on resistance break, Sell on TP/SL hit",
+    descriptionTh: "Trendline จาก Pivot + เป้าหมาย ATR — ซื้อ เมื่อทะลุเส้นแนวต้านที่ลาดลง, ขาย เมื่อชน TP หรือ SL",
+    params: { tbPeriod: 10, tbUseWicks: 1 },
+  },
+  {
+    id: "smart_money_breakout",
+    name: "Smart Money Breakout Channels (AlgoAlpha)",
+    descriptionEn: "Volatility-based channel detection — Buy on bullish channel breakout, Sell on bearish channel breakout",
+    descriptionTh: "Channel จากความผันผวน — ซื้อ เมื่อราคาทะลุขึ้นเหนือ channel, ขาย เมื่อราคาหลุดลงใต้ channel",
+    params: { smcboNormLength: 100, smcboBoxLength: 14, smcboStrongCloses: 1, smcboOverlap: 0 },
+  },
+  {
+    id: "sr_high_volume",
+    name: "S/R High Volume Boxes (ChartPrime)",
+    descriptionEn: "Volume-confirmed pivot S/R boxes — Buy on resistance break with high vol, Sell on support break",
+    descriptionTh: "S/R Boxes กรองด้วยปริมาณการซื้อขาย — ซื้อ เมื่อทะลุแนวต้านพร้อม Volume สูง, ขาย เมื่อหลุดแนวรับ",
+    params: { srhvLookback: 20, srhvVolLen: 2, srhvBoxWidth: 1.0 },
+  },
+  {
+    id: "cdc_actionzone_v2",
+    name: "CDC ActionZone V.2",
+    descriptionEn: "Piriya 2016 — ohlc4 + EMA(2) pre-smooth + Fast/Slow EMA cross. Buy on bullish cross, Sell on bearish",
+    descriptionTh: "Piriya 2016 — ohlc4 + EMA(2) แล้วตัดด้วย Fast/Slow EMA ซื้อ เมื่อ Fast ตัดขึ้นเหนือ Slow, ขาย เมื่อตัดลง",
+    params: { cdcV2Fast: 12, cdcV2Slow: 26 },
+  },
+  {
+    id: "zigzag_pp",
+    name: "ZigZag++ (DevLucem)",
+    descriptionEn: "Percent-deviation ZigZag — Buy on direction flip up, Sell on direction flip down",
+    descriptionTh: "ZigZag ตามเปอร์เซ็นต์การ pullback — ซื้อ เมื่อทิศกลับขึ้น, ขาย เมื่อทิศกลับลง",
+    params: { zzDepth: 12, zzDeviation: 5, zzBackstep: 2 },
+  },
+  {
+    id: "price_action_smc",
+    name: "Price Action SMC (BigBeluga)",
+    descriptionEn: "BOS/CHoCH + Order Blocks + Sweep — Buy on Bullish CHoCH, Sell on Bearish CHoCH",
+    descriptionTh: "BOS/CHoCH + Order Blocks + Sweep — ซื้อ เมื่อ CHoCH ขาขึ้น, ขาย เมื่อ CHoCH ขาลง",
+    params: { pasmcLen: 5, pasmcObLength: 5, pasmcBuildSweep: 1 },
+  },
+  {
+    id: "price_action_sr",
+    name: "Price Action S&R (DGT)",
+    descriptionEn: "3-bar consecutive sequences as S/R + volume/volatility spikes. Buy on resistance break, Sell on support break",
+    descriptionTh: "ลำดับ 3 แท่งติด = S/R + Volume/Volatility spike. ซื้อ เมื่อทะลุแนวต้าน, ขาย เมื่อหลุดแนวรับ",
+    params: { pasrVolMaLength: 89, pasrVolSpikeThresh: 4.669, pasrAtrLength: 11, pasrAtrMult: 2.718 },
+  },
+  {
+    id: "candlestick_patterns",
+    name: "Candlestick Patterns Identified",
+    descriptionEn: "Classic Japanese candlestick patterns — Buy on bullish patterns, Sell on bearish",
+    descriptionTh: "แพทเทิร์น Candlestick คลาสสิก — ซื้อ เมื่อแพทเทิร์น bullish, ขาย เมื่อแพทเทิร์น bearish",
+    params: { cpTrendBars: 5, cpDojiSize: 0.05 },
+  },
+  {
+    id: "pivot_points_hl",
+    name: "Pivot Points HL (LuxAlgo)",
+    descriptionEn: "Regular + missed pivots — Buy on pivot low confirm (expect bounce), Sell on pivot high confirm",
+    descriptionTh: "Pivot ปกติ + missed pivot — ซื้อ เมื่อยืนยัน pivot low (คาดเด้ง), ขาย เมื่อยืนยัน pivot high",
+    params: { pphlLength: 50 },
+  },
+  {
+    id: "tma_overlay",
+    name: "TMA Overlay",
+    descriptionEn: "4 SMMA + 3-Line Strike + Engulfing — Buy on bull strike/engulf in uptrend, Sell on bear in downtrend",
+    descriptionTh: "4 SMMA + 3-Line Strike + Engulfing — ซื้อ เมื่อมีสัญญาณ bull ในเทรนด์ขึ้น, ขาย เมื่อ bear ในเทรนด์ลง",
+    params: {},
+  },
+  {
+    id: "auto_chart_patterns",
+    name: "Auto Chart Patterns (Trendoscope)",
+    descriptionEn: "Channels/Wedges/Triangles from pivots — Buy on bullish breakout above upper, Sell on bearish below lower",
+    descriptionTh: "Channels/Wedges/Triangles จาก pivot — ซื้อ เมื่อทะลุเส้นบน, ขาย เมื่อหลุดเส้นล่าง",
+    params: { acpZigzagLength: 8, acpFlatThreshold: 20, acpNumberOfPivots: 5 },
+  },
+  {
+    id: "diy_strategy_builder",
+    name: "DIY Strategy Builder (ZP)",
+    descriptionEn: "Compose leading + filters — Buy when leading signal passes all enabled filters, Sell symmetric",
+    descriptionTh: "ผสม leading + ตัวกรอง — ซื้อ เมื่อ leading signal ผ่านทุกตัวกรองที่เปิด, ขาย แบบเดียวกัน",
+    params: { diyLeading: 0, diySignalExpiry: 3, diyUseEma200: 1, diyUseRsi50: 1 },
   },
 ];
 
@@ -217,6 +353,142 @@ function utBotStrategy(_k: KlineData[], ind: AllIndicators): SignalAction[] {
   });
 }
 
+function chandelierExitStrategy(_k: KlineData[], ind: AllIndicators): SignalAction[] {
+  return ind.chandelierExit.signal.map((sig) => {
+    if (sig === "BUY") return "BUY";
+    if (sig === "SELL") return "SELL";
+    return "HOLD";
+  });
+}
+
+function tonyEmaScalperStrategy(_k: KlineData[], ind: AllIndicators): SignalAction[] {
+  return ind.tonyEmaScalper.signal.map((sig) => {
+    if (sig === "BUY") return "BUY";
+    if (sig === "SELL") return "SELL";
+    return "HOLD";
+  });
+}
+
+function superTrendStrategyFn(_k: KlineData[], ind: AllIndicators): SignalAction[] {
+  return ind.superTrendStrategy.signal.map((sig) => {
+    if (sig === "BUY") return "BUY";
+    if (sig === "SELL") return "SELL";
+    return "HOLD";
+  });
+}
+
+function turtleChannelsStrategy(_k: KlineData[], ind: AllIndicators): SignalAction[] {
+  return ind.turtleChannels.signal.map((sig) => {
+    if (sig === "BUY") return "BUY";
+    if (sig === "SELL") return "SELL";
+    return "HOLD";
+  });
+}
+
+function scalpingPullBackStrategy(_k: KlineData[], ind: AllIndicators): SignalAction[] {
+  return ind.scalpingPullBack.signal.map((sig) => {
+    if (sig === "BUY") return "BUY";
+    if (sig === "SELL") return "SELL";
+    return "HOLD";
+  });
+}
+
+function trendlineBreakoutsStrategy(_k: KlineData[], ind: AllIndicators): SignalAction[] {
+  return ind.trendlineBreakouts.signal.map((sig) => {
+    if (sig === "BUY") return "BUY";
+    if (sig === "SELL") return "SELL";
+    return "HOLD";
+  });
+}
+
+function smartMoneyBreakoutStrategy(_k: KlineData[], ind: AllIndicators): SignalAction[] {
+  return ind.smartMoneyBreakout.signal.map((sig) => {
+    if (sig === "BUY") return "BUY";
+    if (sig === "SELL") return "SELL";
+    return "HOLD";
+  });
+}
+
+function srHighVolumeStrategy(_k: KlineData[], ind: AllIndicators): SignalAction[] {
+  return ind.srHighVolume.signal.map((sig) => {
+    if (sig === "BUY") return "BUY";
+    if (sig === "SELL") return "SELL";
+    return "HOLD";
+  });
+}
+
+function cdcActionZoneV2Strategy(_k: KlineData[], ind: AllIndicators): SignalAction[] {
+  return ind.cdcActionZoneV2.signal.map((sig) => {
+    if (sig === "BUY") return "BUY";
+    if (sig === "SELL") return "SELL";
+    return "HOLD";
+  });
+}
+
+function zigzagPPStrategy(_k: KlineData[], ind: AllIndicators): SignalAction[] {
+  return ind.zigzagPlusPlus.signal.map((sig) => {
+    if (sig === "BUY") return "BUY";
+    if (sig === "SELL") return "SELL";
+    return "HOLD";
+  });
+}
+
+function priceActionSMCStrategy(_k: KlineData[], ind: AllIndicators): SignalAction[] {
+  return ind.priceActionSMC.signal.map((sig) => {
+    if (sig === "BUY") return "BUY";
+    if (sig === "SELL") return "SELL";
+    return "HOLD";
+  });
+}
+
+function priceActionSRStrategy(_k: KlineData[], ind: AllIndicators): SignalAction[] {
+  return ind.priceActionSR.signal.map((sig) => {
+    if (sig === "BUY") return "BUY";
+    if (sig === "SELL") return "SELL";
+    return "HOLD";
+  });
+}
+
+function candlestickPatternsStrategy(_k: KlineData[], ind: AllIndicators): SignalAction[] {
+  return ind.candlestickPatterns.signal.map((sig) => {
+    if (sig === "BUY") return "BUY";
+    if (sig === "SELL") return "SELL";
+    return "HOLD";
+  });
+}
+
+function pivotPointsHLStrategy(_k: KlineData[], ind: AllIndicators): SignalAction[] {
+  return ind.pivotPointsHL.signal.map((sig) => {
+    if (sig === "BUY") return "BUY";
+    if (sig === "SELL") return "SELL";
+    return "HOLD";
+  });
+}
+
+function tmaOverlayStrategy(_k: KlineData[], ind: AllIndicators): SignalAction[] {
+  return ind.tmaOverlay.signal.map((sig) => {
+    if (sig === "BUY") return "BUY";
+    if (sig === "SELL") return "SELL";
+    return "HOLD";
+  });
+}
+
+function autoChartPatternsStrategy(_k: KlineData[], ind: AllIndicators): SignalAction[] {
+  return ind.autoChartPatterns.signal.map((sig) => {
+    if (sig === "BUY") return "BUY";
+    if (sig === "SELL") return "SELL";
+    return "HOLD";
+  });
+}
+
+function diyStrategyBuilderStrategy(_k: KlineData[], ind: AllIndicators): SignalAction[] {
+  return ind.diyStrategyBuilder.signal.map((sig) => {
+    if (sig === "BUY") return "BUY";
+    if (sig === "SELL") return "SELL";
+    return "HOLD";
+  });
+}
+
 const STRATEGY_FNS: Record<StrategyId, SignalFn> = {
   rsi: rsiStrategy,
   cdc_actionzone: cdcActionZoneStrategy,
@@ -228,6 +500,23 @@ const STRATEGY_FNS: Record<StrategyId, SignalFn> = {
   support_resistance: supportResistanceStrategy,
   trendlines: trendlinesStrategy,
   ut_bot: utBotStrategy,
+  chandelier_exit: chandelierExitStrategy,
+  tony_ema_scalper: tonyEmaScalperStrategy,
+  supertrend_strategy: superTrendStrategyFn,
+  turtle_channels: turtleChannelsStrategy,
+  scalping_pullback: scalpingPullBackStrategy,
+  trendline_breakouts: trendlineBreakoutsStrategy,
+  smart_money_breakout: smartMoneyBreakoutStrategy,
+  sr_high_volume: srHighVolumeStrategy,
+  cdc_actionzone_v2: cdcActionZoneV2Strategy,
+  zigzag_pp: zigzagPPStrategy,
+  price_action_smc: priceActionSMCStrategy,
+  price_action_sr: priceActionSRStrategy,
+  candlestick_patterns: candlestickPatternsStrategy,
+  pivot_points_hl: pivotPointsHLStrategy,
+  tma_overlay: tmaOverlayStrategy,
+  auto_chart_patterns: autoChartPatternsStrategy,
+  diy_strategy_builder: diyStrategyBuilderStrategy,
 };
 
 // ─── Backtest Engine ───────────────────────────────────────────
@@ -259,6 +548,54 @@ export function runBacktest(
     trendMult: strategyId === "trendlines" ? (params.trendMult ?? 1.0) : undefined,
     utBotKey: strategyId === "ut_bot" ? (params.keyValue ?? 1) : undefined,
     utBotAtrPeriod: strategyId === "ut_bot" ? (params.utAtrPeriod ?? 10) : undefined,
+    ceLength: strategyId === "chandelier_exit" ? (params.ceLength ?? 22) : undefined,
+    ceMult: strategyId === "chandelier_exit" ? (params.ceMult ?? 3.0) : undefined,
+    ceUseClose: strategyId === "chandelier_exit" ? (params.ceUseClose ?? 1) : undefined,
+    tonyEmaLength: strategyId === "tony_ema_scalper" ? (params.tonyEmaLength ?? 20) : undefined,
+    tonyChannelLength: strategyId === "tony_ema_scalper" ? (params.tonyChannelLength ?? 8) : undefined,
+    stsAtrPeriod: strategyId === "supertrend_strategy" ? (params.stsAtrPeriod ?? 10) : undefined,
+    stsMultiplier: strategyId === "supertrend_strategy" ? (params.stsMultiplier ?? 3.0) : undefined,
+    stsChangeATR: strategyId === "supertrend_strategy" ? (params.stsChangeATR ?? 1) : undefined,
+    turtleEntryLength: strategyId === "turtle_channels" ? (params.turtleEntryLength ?? 20) : undefined,
+    turtleExitLength: strategyId === "turtle_channels" ? (params.turtleExitLength ?? 10) : undefined,
+    spPacLength: strategyId === "scalping_pullback" ? (params.spPacLength ?? 34) : undefined,
+    spFastEMA: strategyId === "scalping_pullback" ? (params.spFastEMA ?? 89) : undefined,
+    spMediumEMA: strategyId === "scalping_pullback" ? (params.spMediumEMA ?? 200) : undefined,
+    spLookback: strategyId === "scalping_pullback" ? (params.spLookback ?? 3) : undefined,
+    tbPeriod: strategyId === "trendline_breakouts" ? (params.tbPeriod ?? 10) : undefined,
+    tbUseWicks: strategyId === "trendline_breakouts" ? (params.tbUseWicks ?? 1) : undefined,
+    smcboNormLength: strategyId === "smart_money_breakout" ? (params.smcboNormLength ?? 100) : undefined,
+    smcboBoxLength: strategyId === "smart_money_breakout" ? (params.smcboBoxLength ?? 14) : undefined,
+    smcboStrongCloses: strategyId === "smart_money_breakout" ? (params.smcboStrongCloses ?? 1) : undefined,
+    smcboOverlap: strategyId === "smart_money_breakout" ? (params.smcboOverlap ?? 0) : undefined,
+    srhvLookback: strategyId === "sr_high_volume" ? (params.srhvLookback ?? 20) : undefined,
+    srhvVolLen: strategyId === "sr_high_volume" ? (params.srhvVolLen ?? 2) : undefined,
+    srhvBoxWidth: strategyId === "sr_high_volume" ? (params.srhvBoxWidth ?? 1.0) : undefined,
+    cdcV2Fast: strategyId === "cdc_actionzone_v2" ? (params.cdcV2Fast ?? 12) : undefined,
+    cdcV2Slow: strategyId === "cdc_actionzone_v2" ? (params.cdcV2Slow ?? 26) : undefined,
+    zzDepth: strategyId === "zigzag_pp" ? (params.zzDepth ?? 12) : undefined,
+    zzDeviation: strategyId === "zigzag_pp" ? (params.zzDeviation ?? 5) : undefined,
+    zzBackstep: strategyId === "zigzag_pp" ? (params.zzBackstep ?? 2) : undefined,
+    pasmcLen: strategyId === "price_action_smc" ? (params.pasmcLen ?? 5) : undefined,
+    pasmcObLength: strategyId === "price_action_smc" ? (params.pasmcObLength ?? 5) : undefined,
+    pasmcBuildSweep: strategyId === "price_action_smc" ? (params.pasmcBuildSweep ?? 1) : undefined,
+    pasrVolMaLength: strategyId === "price_action_sr" ? (params.pasrVolMaLength ?? 89) : undefined,
+    pasrVolSpikeThresh: strategyId === "price_action_sr" ? (params.pasrVolSpikeThresh ?? 4.669) : undefined,
+    pasrAtrLength: strategyId === "price_action_sr" ? (params.pasrAtrLength ?? 11) : undefined,
+    pasrAtrMult: strategyId === "price_action_sr" ? (params.pasrAtrMult ?? 2.718) : undefined,
+    cpTrendBars: strategyId === "candlestick_patterns" ? (params.cpTrendBars ?? 5) : undefined,
+    cpDojiSize: strategyId === "candlestick_patterns" ? (params.cpDojiSize ?? 0.05) : undefined,
+    pphlLength: strategyId === "pivot_points_hl" ? (params.pphlLength ?? 50) : undefined,
+    acpZigzagLength: strategyId === "auto_chart_patterns" ? (params.acpZigzagLength ?? 8) : undefined,
+    acpFlatThreshold: strategyId === "auto_chart_patterns" ? (params.acpFlatThreshold ?? 20) : undefined,
+    acpNumberOfPivots: strategyId === "auto_chart_patterns" ? (params.acpNumberOfPivots ?? 5) : undefined,
+    diyLeading: strategyId === "diy_strategy_builder" ? (params.diyLeading ?? 0) : undefined,
+    diySignalExpiry: strategyId === "diy_strategy_builder" ? (params.diySignalExpiry ?? 3) : undefined,
+    diyUseEma200: strategyId === "diy_strategy_builder" ? (params.diyUseEma200 ?? 0) : undefined,
+    diyUseEmaCross: strategyId === "diy_strategy_builder" ? (params.diyUseEmaCross ?? 0) : undefined,
+    diyUseCdcZone: strategyId === "diy_strategy_builder" ? (params.diyUseCdcZone ?? 0) : undefined,
+    diyUseTrendlines: strategyId === "diy_strategy_builder" ? (params.diyUseTrendlines ?? 0) : undefined,
+    diyUseRsi50: strategyId === "diy_strategy_builder" ? (params.diyUseRsi50 ?? 1) : undefined,
   });
   const signals = STRATEGY_FNS[strategyId](klines, indicators, params);
 

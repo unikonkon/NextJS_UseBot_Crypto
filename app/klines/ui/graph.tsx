@@ -113,6 +113,22 @@ export default function KlineGraph({ klines, indicators, btResult, strategyId }:
   const [showTrendlines, setShowTrendlines] = useState(false);
   const [showUtBot, setShowUtBot] = useState(false);
   const [showMsbOb, setShowMsbOb] = useState(false);
+  const [showChandelier, setShowChandelier] = useState(false);
+  const [showTonyEma, setShowTonyEma] = useState(false);
+  const [showSuperTrendStrat, setShowSuperTrendStrat] = useState(false);
+  const [showTurtle, setShowTurtle] = useState(false);
+  const [showScalpPB, setShowScalpPB] = useState(false);
+  const [showTrendlineBO, setShowTrendlineBO] = useState(false);
+  const [showSmcBO, setShowSmcBO] = useState(false);
+  const [showSRHV, setShowSRHV] = useState(false);
+  const [showCdcV2, setShowCdcV2] = useState(false);
+  const [showZigzagPP, setShowZigzagPP] = useState(false);
+  const [showPriceActionSMC, setShowPriceActionSMC] = useState(false);
+  const [showPriceActionSR, setShowPriceActionSR] = useState(false);
+  const [showCandlestickP, setShowCandlestickP] = useState(false);
+  const [showPivotHL, setShowPivotHL] = useState(false);
+  const [showTma, setShowTma] = useState(false);
+  const [showAcp, setShowAcp] = useState(false);
   const [showRsiToggle, setShowRsiToggle] = useState(true);
   const [showMacdToggle, setShowMacdToggle] = useState(true);
   const [showSqzToggle, setShowSqzToggle] = useState(false);
@@ -128,6 +144,22 @@ export default function KlineGraph({ klines, indicators, btResult, strategyId }:
     setShowTrendlines(false);
     setShowUtBot(false);
     setShowMsbOb(false);
+    setShowChandelier(false);
+    setShowTonyEma(false);
+    setShowSuperTrendStrat(false);
+    setShowTurtle(false);
+    setShowScalpPB(false);
+    setShowTrendlineBO(false);
+    setShowSmcBO(false);
+    setShowSRHV(false);
+    setShowCdcV2(false);
+    setShowZigzagPP(false);
+    setShowPriceActionSMC(false);
+    setShowPriceActionSR(false);
+    setShowCandlestickP(false);
+    setShowPivotHL(false);
+    setShowTma(false);
+    setShowAcp(false);
     // Reset panels
     setShowRsiToggle(false);
     setShowMacdToggle(false);
@@ -145,6 +177,22 @@ export default function KlineGraph({ klines, indicators, btResult, strategyId }:
       case "support_resistance": setShowSR(true); break;
       case "trendlines": setShowTrendlines(true); break;
       case "ut_bot": setShowUtBot(true); break;
+      case "chandelier_exit": setShowChandelier(true); break;
+      case "tony_ema_scalper": setShowTonyEma(true); break;
+      case "supertrend_strategy": setShowSuperTrendStrat(true); break;
+      case "turtle_channels": setShowTurtle(true); break;
+      case "scalping_pullback": setShowScalpPB(true); break;
+      case "trendline_breakouts": setShowTrendlineBO(true); break;
+      case "smart_money_breakout": setShowSmcBO(true); break;
+      case "sr_high_volume": setShowSRHV(true); break;
+      case "cdc_actionzone_v2": setShowCdcV2(true); break;
+      case "zigzag_pp": setShowZigzagPP(true); break;
+      case "price_action_smc": setShowPriceActionSMC(true); break;
+      case "price_action_sr": setShowPriceActionSR(true); break;
+      case "candlestick_patterns": setShowCandlestickP(true); break;
+      case "pivot_points_hl": setShowPivotHL(true); break;
+      case "tma_overlay": setShowTma(true); break;
+      case "auto_chart_patterns": setShowAcp(true); break;
     }
   }, [strategyId]);
 
@@ -664,6 +712,666 @@ export default function KlineGraph({ klines, indicators, btResult, strategyId }:
           ]);
         }
       }
+
+      // Chandelier Exit overlay
+      if (showChandelier) {
+        const ce = indicators.chandelierExit;
+        const longData: ({ time: UTCTimestamp; value: number } | { time: UTCTimestamp })[] = [];
+        const shortData: ({ time: UTCTimestamp; value: number } | { time: UTCTimestamp })[] = [];
+        for (let i = 0; i < klines.length; i++) {
+          const t = times[i];
+          const d = ce.dir[i];
+          if (d === 1 && ce.longStop[i] !== null) {
+            longData.push({ time: t, value: ce.longStop[i]! });
+            shortData.push({ time: t });
+          } else if (d === -1 && ce.shortStop[i] !== null) {
+            shortData.push({ time: t, value: ce.shortStop[i]! });
+            longData.push({ time: t });
+          } else {
+            longData.push({ time: t });
+            shortData.push({ time: t });
+          }
+        }
+        chart.addSeries(LineSeries, {
+          color: "#10b981",
+          lineWidth: 2,
+          priceLineVisible: false,
+          lastValueVisible: false,
+          crosshairMarkerVisible: false,
+        }).setData(longData as { time: UTCTimestamp; value: number }[]);
+        chart.addSeries(LineSeries, {
+          color: "#ef4444",
+          lineWidth: 2,
+          priceLineVisible: false,
+          lastValueVisible: false,
+          crosshairMarkerVisible: false,
+        }).setData(shortData as { time: UTCTimestamp; value: number }[]);
+      }
+
+      // Tony's EMA Scalper overlay
+      if (showTonyEma) {
+        const ts = indicators.tonyEmaScalper;
+        const emaData = ts.emaLine.map((v, i) => v !== null ? { time: times[i], value: v } : null).filter(Boolean) as { time: UTCTimestamp; value: number }[];
+        const hiData = ts.highChannel.map((v, i) => v !== null ? { time: times[i], value: v } : null).filter(Boolean) as { time: UTCTimestamp; value: number }[];
+        const loData = ts.lowChannel.map((v, i) => v !== null ? { time: times[i], value: v } : null).filter(Boolean) as { time: UTCTimestamp; value: number }[];
+
+        chart.addSeries(LineSeries, {
+          color: "#3b82f6",
+          lineWidth: 2,
+          priceLineVisible: false,
+          lastValueVisible: false,
+          crosshairMarkerVisible: false,
+        }).setData(emaData);
+        chart.addSeries(LineSeries, {
+          color: "rgba(239,68,68,0.6)",
+          lineWidth: 1,
+          priceLineVisible: false,
+          lastValueVisible: false,
+          crosshairMarkerVisible: false,
+        }).setData(hiData);
+        chart.addSeries(LineSeries, {
+          color: "rgba(16,185,129,0.6)",
+          lineWidth: 1,
+          priceLineVisible: false,
+          lastValueVisible: false,
+          crosshairMarkerVisible: false,
+        }).setData(loData);
+      }
+
+      // SuperTrend STRATEGY (Kivanc) overlay — same shape as base Supertrend
+      if (showSuperTrendStrat) {
+        const sts = indicators.superTrendStrategy;
+        const upData: ({ time: UTCTimestamp; value: number } | { time: UTCTimestamp })[] = [];
+        const dnData: ({ time: UTCTimestamp; value: number } | { time: UTCTimestamp })[] = [];
+        for (let i = 0; i < klines.length; i++) {
+          const t = times[i];
+          const val = sts.supertrend[i];
+          const trend = sts.trend[i];
+          if (val === null || trend === null) {
+            upData.push({ time: t });
+            dnData.push({ time: t });
+            continue;
+          }
+          if (trend === 1) {
+            upData.push({ time: t, value: val });
+            dnData.push({ time: t });
+          } else {
+            dnData.push({ time: t, value: val });
+            upData.push({ time: t });
+          }
+        }
+        chart.addSeries(LineSeries, {
+          color: "#10b981",
+          lineWidth: 2,
+          priceLineVisible: false,
+          lastValueVisible: false,
+          crosshairMarkerVisible: false,
+        }).setData(upData as { time: UTCTimestamp; value: number }[]);
+        chart.addSeries(LineSeries, {
+          color: "#ef4444",
+          lineWidth: 2,
+          priceLineVisible: false,
+          lastValueVisible: false,
+          crosshairMarkerVisible: false,
+        }).setData(dnData as { time: UTCTimestamp; value: number }[]);
+      }
+
+      // Turtle Trade Channels overlay
+      if (showTurtle) {
+        const tc = indicators.turtleChannels;
+        const upperData = tc.upper.map((v, i) => v !== null ? { time: times[i], value: v } : null).filter(Boolean) as { time: UTCTimestamp; value: number }[];
+        const lowerData = tc.lower.map((v, i) => v !== null ? { time: times[i], value: v } : null).filter(Boolean) as { time: UTCTimestamp; value: number }[];
+        const exitData = tc.exitLine.map((v, i) => v !== null ? { time: times[i], value: v } : null).filter(Boolean) as { time: UTCTimestamp; value: number }[];
+
+        chart.addSeries(LineSeries, {
+          color: "rgba(0,148,255,0.6)",
+          lineWidth: 1,
+          priceLineVisible: false,
+          lastValueVisible: false,
+          crosshairMarkerVisible: false,
+        }).setData(upperData);
+        chart.addSeries(LineSeries, {
+          color: "rgba(0,148,255,0.6)",
+          lineWidth: 1,
+          priceLineVisible: false,
+          lastValueVisible: false,
+          crosshairMarkerVisible: false,
+        }).setData(lowerData);
+        chart.addSeries(LineSeries, {
+          color: "#3b82f6",
+          lineWidth: 1,
+          lineStyle: 2,
+          priceLineVisible: false,
+          lastValueVisible: false,
+          crosshairMarkerVisible: false,
+        }).setData(exitData);
+      }
+
+      // Scalping PullBack Tool overlay
+      if (showScalpPB) {
+        const sp = indicators.scalpingPullBack;
+        const pacUData = sp.pacU.map((v, i) => v !== null ? { time: times[i], value: v } : null).filter(Boolean) as { time: UTCTimestamp; value: number }[];
+        const pacLData = sp.pacL.map((v, i) => v !== null ? { time: times[i], value: v } : null).filter(Boolean) as { time: UTCTimestamp; value: number }[];
+        const pacCData = sp.pacC.map((v, i) => v !== null ? { time: times[i], value: v } : null).filter(Boolean) as { time: UTCTimestamp; value: number }[];
+        const fastData = sp.fastEMA.map((v, i) => v !== null ? { time: times[i], value: v } : null).filter(Boolean) as { time: UTCTimestamp; value: number }[];
+        const medData = sp.mediumEMA.map((v, i) => v !== null ? { time: times[i], value: v } : null).filter(Boolean) as { time: UTCTimestamp; value: number }[];
+
+        chart.addSeries(LineSeries, {
+          color: "rgba(148,163,184,0.5)",
+          lineWidth: 1,
+          priceLineVisible: false,
+          lastValueVisible: false,
+          crosshairMarkerVisible: false,
+        }).setData(pacUData);
+        chart.addSeries(LineSeries, {
+          color: "rgba(148,163,184,0.5)",
+          lineWidth: 1,
+          priceLineVisible: false,
+          lastValueVisible: false,
+          crosshairMarkerVisible: false,
+        }).setData(pacLData);
+        chart.addSeries(LineSeries, {
+          color: "#ef4444",
+          lineWidth: 2,
+          priceLineVisible: false,
+          lastValueVisible: false,
+          crosshairMarkerVisible: false,
+        }).setData(pacCData);
+        chart.addSeries(LineSeries, {
+          color: "#10b981",
+          lineWidth: 1,
+          priceLineVisible: false,
+          lastValueVisible: false,
+          crosshairMarkerVisible: false,
+        }).setData(fastData);
+        chart.addSeries(LineSeries, {
+          color: "#3b82f6",
+          lineWidth: 1,
+          priceLineVisible: false,
+          lastValueVisible: false,
+          crosshairMarkerVisible: false,
+        }).setData(medData);
+      }
+
+      // Trendline Breakouts overlay
+      if (showTrendlineBO) {
+        const tb = indicators.trendlineBreakouts;
+        const upData = tb.upperTrendline.map((v, i) => v !== null ? { time: times[i], value: v } : null).filter(Boolean) as { time: UTCTimestamp; value: number }[];
+        const loData = tb.lowerTrendline.map((v, i) => v !== null ? { time: times[i], value: v } : null).filter(Boolean) as { time: UTCTimestamp; value: number }[];
+
+        chart.addSeries(LineSeries, {
+          color: "rgba(212,46,0,0.6)",
+          lineWidth: 1,
+          lineStyle: 2,
+          priceLineVisible: false,
+          lastValueVisible: false,
+          crosshairMarkerVisible: false,
+        }).setData(upData);
+        chart.addSeries(LineSeries, {
+          color: "rgba(11,139,7,0.6)",
+          lineWidth: 1,
+          lineStyle: 2,
+          priceLineVisible: false,
+          lastValueVisible: false,
+          crosshairMarkerVisible: false,
+        }).setData(loData);
+
+        // TP/SL lines for active long trades
+        for (const t of tb.targets.slice(-20)) {
+          if (t.direction !== 1) continue;
+          const startTime = times[t.index];
+          const endIdx = t.hitIndex ?? Math.min(t.index + 30, klines.length - 1);
+          if (endIdx <= t.index) continue;
+          const endTime = times[endIdx];
+          if (!startTime || !endTime) continue;
+          chart.addSeries(LineSeries, {
+            color: "rgba(154,103,20,0.8)",
+            lineWidth: 1,
+            lineStyle: 2,
+            priceLineVisible: false,
+            lastValueVisible: false,
+            crosshairMarkerVisible: false,
+          }).setData([{ time: startTime, value: t.tp }, { time: endTime, value: t.tp }]);
+          chart.addSeries(LineSeries, {
+            color: "rgba(246,7,7,0.6)",
+            lineWidth: 1,
+            lineStyle: 2,
+            priceLineVisible: false,
+            lastValueVisible: false,
+            crosshairMarkerVisible: false,
+          }).setData([{ time: startTime, value: t.sl }, { time: endTime, value: t.sl }]);
+        }
+      }
+
+      // Smart Money Breakout Channels overlay
+      if (showSmcBO) {
+        const smcbo = indicators.smartMoneyBreakout;
+        for (const ch of smcbo.channels.slice(-20)) {
+          const startTime = times[ch.startIndex];
+          const endIdx = ch.broken && ch.breakIndex !== null ? ch.breakIndex : Math.min(ch.endIndex, klines.length - 1);
+          const endTime = times[endIdx];
+          if (!startTime || !endTime || startTime === endTime) continue;
+          const color = ch.broken
+            ? (ch.breakDirection === "bullish" ? "rgba(0,255,187,0.4)" : "rgba(255,17,0,0.4)")
+            : "rgba(148,163,184,0.4)";
+          chart.addSeries(LineSeries, {
+            color,
+            lineWidth: 2,
+            lineStyle: 0,
+            priceLineVisible: false,
+            lastValueVisible: false,
+            crosshairMarkerVisible: false,
+          }).setData([{ time: startTime, value: ch.top }, { time: endTime, value: ch.top }]);
+          chart.addSeries(LineSeries, {
+            color,
+            lineWidth: 2,
+            lineStyle: 0,
+            priceLineVisible: false,
+            lastValueVisible: false,
+            crosshairMarkerVisible: false,
+          }).setData([{ time: startTime, value: ch.bottom }, { time: endTime, value: ch.bottom }]);
+        }
+      }
+
+      // SR High Volume Boxes overlay
+      if (showSRHV) {
+        const srhv = indicators.srHighVolume;
+        for (const b of srhv.boxes.slice(-20)) {
+          const startTime = times[b.startIndex];
+          const endIdx = b.broken && b.brokenAtIndex !== null ? b.brokenAtIndex : Math.min(b.endIndex, klines.length - 1);
+          const endTime = times[endIdx];
+          if (!startTime || !endTime || startTime === endTime) continue;
+          const color = b.type === "support"
+            ? (b.broken ? "rgba(239,68,68,0.35)" : "rgba(32,202,38,0.35)")
+            : (b.broken ? "rgba(16,185,129,0.35)" : "rgba(233,41,41,0.35)");
+          chart.addSeries(LineSeries, {
+            color,
+            lineWidth: 1,
+            lineStyle: b.broken ? 2 : 0,
+            priceLineVisible: false,
+            lastValueVisible: false,
+            crosshairMarkerVisible: false,
+          }).setData([{ time: startTime, value: b.top }, { time: endTime, value: b.top }]);
+          chart.addSeries(LineSeries, {
+            color,
+            lineWidth: 1,
+            lineStyle: b.broken ? 2 : 0,
+            priceLineVisible: false,
+            lastValueVisible: false,
+            crosshairMarkerVisible: false,
+          }).setData([{ time: startTime, value: b.bottom }, { time: endTime, value: b.bottom }]);
+        }
+      }
+
+      // CDC ActionZone V.2 overlay
+      if (showCdcV2) {
+        const cdc2 = indicators.cdcActionZoneV2;
+        const fastData = cdc2.fast.map((v, i) => v !== null ? { time: times[i], value: v } : null).filter(Boolean) as { time: UTCTimestamp; value: number }[];
+        const slowData = cdc2.slow.map((v, i) => v !== null ? { time: times[i], value: v } : null).filter(Boolean) as { time: UTCTimestamp; value: number }[];
+
+        chart.addSeries(LineSeries, {
+          color: "#ef4444",
+          lineWidth: 1,
+          priceLineVisible: false,
+          lastValueVisible: false,
+        }).setData(fastData);
+        chart.addSeries(LineSeries, {
+          color: "#3b82f6",
+          lineWidth: 2,
+          priceLineVisible: false,
+          lastValueVisible: false,
+        }).setData(slowData);
+
+        if (strategyId === "cdc_actionzone_v2") {
+          const zoneColors: Record<string, string> = {
+            green: "#10b981",
+            red: "#ef4444",
+            yellow: "#eab308",
+            blue: "#3b82f6",
+          };
+          const colored = klines.map((k, i) => {
+            const z = cdc2.zone[i];
+            const col = z ? zoneColors[z] : undefined;
+            return {
+              time: toUTC(k.openTime),
+              open: +k.open,
+              high: +k.high,
+              low: +k.low,
+              close: +k.close,
+              ...(col ? { color: col, wickColor: col, borderColor: col } : {}),
+            };
+          });
+          candleSeries.setData(colored);
+        }
+      }
+
+      // ZigZag++ overlay
+      if (showZigzagPP) {
+        const zz = indicators.zigzagPlusPlus;
+        if (zz.swingPoints.length >= 2) {
+          const sorted = [...zz.swingPoints]
+            .filter(sp => sp.index >= 0 && sp.index < klines.length)
+            .sort((a, b) => a.index - b.index);
+          const dedup: typeof sorted = [];
+          for (const sp of sorted) {
+            if (dedup.length > 0 && dedup[dedup.length - 1].index === sp.index) {
+              dedup[dedup.length - 1] = sp;
+            } else {
+              dedup.push(sp);
+            }
+          }
+          const lineData = dedup.map(sp => ({ time: times[sp.index], value: sp.price }));
+          if (lineData.length >= 2) {
+            chart.addSeries(LineSeries, {
+              color: isDark ? "rgba(148,163,184,0.7)" : "rgba(100,116,139,0.7)",
+              lineWidth: 2,
+              priceLineVisible: false,
+              lastValueVisible: false,
+              crosshairMarkerVisible: false,
+            }).setData(lineData);
+          }
+          // HH/LH/HL/LL markers
+          if (!btResult) {
+            const zzMarkers: SeriesMarker<UTCTimestamp>[] = [];
+            for (const sp of dedup) {
+              zzMarkers.push({
+                time: times[sp.index],
+                position: sp.direction === 1 ? "aboveBar" : "belowBar",
+                color: sp.direction === 1 ? "#84cc16" : "#ef4444",
+                shape: sp.direction === 1 ? "arrowDown" : "arrowUp",
+                text: sp.type,
+              });
+            }
+            if (zzMarkers.length > 0) {
+              const seen = new Map<number, SeriesMarker<UTCTimestamp>>();
+              for (const m of zzMarkers) seen.set(m.time as number, m);
+              const md = Array.from(seen.values()).sort((a, b) => (a.time as number) - (b.time as number));
+              createSeriesMarkers(candleSeries, md);
+            }
+          }
+        }
+      }
+
+      // Price Action SMC overlay
+      if (showPriceActionSMC) {
+        const pasm = indicators.priceActionSMC;
+        // Structure level lines
+        for (const s of pasm.structures) {
+          if (s.pivotIndex < 0 || s.index < 0 || s.pivotIndex >= klines.length || s.index >= klines.length) continue;
+          const t1 = times[s.pivotIndex];
+          const t2 = times[s.index];
+          if (!t1 || !t2 || t1 === t2) continue;
+          const isBull = s.bias === "bullish";
+          const color = s.type === "Sweep"
+            ? (isBull ? "rgba(132,204,22,0.6)" : "rgba(248,113,113,0.6)")
+            : (isBull ? "#10b981" : "#ef4444");
+          const style = s.type === "BOS" ? 0 : 2;
+          chart.addSeries(LineSeries, {
+            color,
+            lineWidth: s.type === "CHoCH" ? 2 : 1,
+            lineStyle: style,
+            priceLineVisible: false,
+            lastValueVisible: false,
+            crosshairMarkerVisible: false,
+          }).setData([{ time: t1, value: s.level }, { time: t2, value: s.level }]);
+        }
+        // Structure markers
+        if (!btResult) {
+          const pmMarkers: SeriesMarker<UTCTimestamp>[] = [];
+          for (const s of pasm.structures) {
+            if (s.index < 0 || s.index >= klines.length) continue;
+            pmMarkers.push({
+              time: times[s.index],
+              position: s.bias === "bullish" ? "belowBar" : "aboveBar",
+              color: s.bias === "bullish" ? "#10b981" : "#ef4444",
+              shape: s.bias === "bullish" ? "arrowUp" : "arrowDown",
+              text: s.type,
+            });
+          }
+          if (pmMarkers.length > 0) {
+            const seen = new Map<number, SeriesMarker<UTCTimestamp>>();
+            for (const m of pmMarkers) seen.set(m.time as number, m);
+            const md = Array.from(seen.values()).sort((a, b) => (a.time as number) - (b.time as number));
+            createSeriesMarkers(candleSeries, md);
+          }
+        }
+        // Active order blocks
+        const activeOBs = pasm.orderBlocks.filter(ob => !ob.mitigated).slice(-10);
+        for (const ob of activeOBs) {
+          const startTime = times[ob.startIndex];
+          const endTime = times[Math.min(ob.endIndex, klines.length - 1)];
+          if (!startTime || !endTime || startTime === endTime) continue;
+          const color = ob.bias === "bullish" ? "rgba(16,185,129,0.35)" : "rgba(239,68,68,0.35)";
+          chart.addSeries(LineSeries, {
+            color,
+            lineWidth: 1,
+            priceLineVisible: false,
+            lastValueVisible: false,
+            crosshairMarkerVisible: false,
+          }).setData([{ time: startTime, value: ob.high }, { time: endTime, value: ob.high }]);
+          chart.addSeries(LineSeries, {
+            color,
+            lineWidth: 1,
+            priceLineVisible: false,
+            lastValueVisible: false,
+            crosshairMarkerVisible: false,
+          }).setData([{ time: startTime, value: ob.low }, { time: endTime, value: ob.low }]);
+        }
+      }
+
+      // Candlestick Patterns overlay (markers only)
+      if (showCandlestickP && !btResult) {
+        const cp = indicators.candlestickPatterns;
+        const cpMarkers: SeriesMarker<UTCTimestamp>[] = [];
+        for (const hit of cp.hits.slice(-50)) {
+          if (hit.index < 0 || hit.index >= klines.length) continue;
+          const isBull = hit.bias === "bullish";
+          const isBear = hit.bias === "bearish";
+          cpMarkers.push({
+            time: times[hit.index],
+            position: isBull ? "belowBar" : "aboveBar",
+            color: isBull ? "#10b981" : isBear ? "#ef4444" : "#9ca3af",
+            shape: isBull ? "arrowUp" : isBear ? "arrowDown" : "circle",
+            text: hit.pattern.replace(/([A-Z])/g, " $1").trim(),
+          });
+        }
+        if (cpMarkers.length > 0) {
+          const seen = new Map<number, SeriesMarker<UTCTimestamp>>();
+          for (const m of cpMarkers) seen.set(m.time as number, m);
+          const md = Array.from(seen.values()).sort((a, b) => (a.time as number) - (b.time as number));
+          createSeriesMarkers(candleSeries, md);
+        }
+      }
+
+      // Pivot Points HL overlay
+      if (showPivotHL) {
+        const pphl = indicators.pivotPointsHL;
+        if (pphl.zigzag.length >= 2) {
+          const sorted = [...pphl.zigzag]
+            .filter(p => p.index >= 0 && p.index < klines.length)
+            .sort((a, b) => a.index - b.index);
+          const dedup: typeof sorted = [];
+          for (const p of sorted) {
+            if (dedup.length > 0 && dedup[dedup.length - 1].index === p.index) dedup[dedup.length - 1] = p;
+            else dedup.push(p);
+          }
+          const lineData = dedup.map(p => ({ time: times[p.index], value: p.price }));
+          if (lineData.length >= 2) {
+            chart.addSeries(LineSeries, {
+              color: isDark ? "rgba(148,163,184,0.7)" : "rgba(100,116,139,0.7)",
+              lineWidth: 1,
+              lineStyle: 2,
+              priceLineVisible: false,
+              lastValueVisible: false,
+              crosshairMarkerVisible: false,
+            }).setData(lineData);
+          }
+        }
+        if (!btResult) {
+          const pivMarkers: SeriesMarker<UTCTimestamp>[] = [];
+          for (const p of pphl.pivots.slice(-50)) {
+            if (p.index < 0 || p.index >= klines.length) continue;
+            const isHigh = p.type === "regular_high" || p.type === "missed_high";
+            const isMissed = p.type === "missed_high" || p.type === "missed_low";
+            pivMarkers.push({
+              time: times[p.index],
+              position: isHigh ? "aboveBar" : "belowBar",
+              color: isMissed ? (isHigh ? "#ef5350" : "#26a69a") : (isHigh ? "#ef4444" : "#10b981"),
+              shape: isMissed ? "circle" : (isHigh ? "arrowDown" : "arrowUp"),
+              text: isMissed ? "👻" : (isHigh ? "▼" : "▲"),
+            });
+          }
+          if (pivMarkers.length > 0) {
+            const seen = new Map<number, SeriesMarker<UTCTimestamp>>();
+            for (const m of pivMarkers) seen.set(m.time as number, m);
+            const md = Array.from(seen.values()).sort((a, b) => (a.time as number) - (b.time as number));
+            createSeriesMarkers(candleSeries, md);
+          }
+        }
+      }
+
+      // TMA Overlay overlay
+      if (showTma) {
+        const tma = indicators.tmaOverlay;
+        const s21 = tma.smma21.map((v, i) => v !== null ? { time: times[i], value: v } : null).filter(Boolean) as { time: UTCTimestamp; value: number }[];
+        const s50 = tma.smma50.map((v, i) => v !== null ? { time: times[i], value: v } : null).filter(Boolean) as { time: UTCTimestamp; value: number }[];
+        const s100 = tma.smma100.map((v, i) => v !== null ? { time: times[i], value: v } : null).filter(Boolean) as { time: UTCTimestamp; value: number }[];
+        const s200 = tma.smma200.map((v, i) => v !== null ? { time: times[i], value: v } : null).filter(Boolean) as { time: UTCTimestamp; value: number }[];
+
+        chart.addSeries(LineSeries, { color: isDark ? "#ffffff" : "#374151", lineWidth: 2, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }).setData(s21);
+        chart.addSeries(LineSeries, { color: "#6aff00", lineWidth: 2, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }).setData(s50);
+        chart.addSeries(LineSeries, { color: "#eab308", lineWidth: 2, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }).setData(s100);
+        chart.addSeries(LineSeries, { color: "#ff0500", lineWidth: 2, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }).setData(s200);
+
+        if (!btResult) {
+          const tmaMarkers: SeriesMarker<UTCTimestamp>[] = [];
+          for (const i of tma.threeLineStrikeBull.slice(-20)) {
+            if (i < 0 || i >= klines.length) continue;
+            tmaMarkers.push({ time: times[i], position: "belowBar", color: "#10b981", shape: "arrowUp", text: "3s" });
+          }
+          for (const i of tma.threeLineStrikeBear.slice(-20)) {
+            if (i < 0 || i >= klines.length) continue;
+            tmaMarkers.push({ time: times[i], position: "aboveBar", color: "#ef4444", shape: "arrowDown", text: "3s" });
+          }
+          if (tmaMarkers.length > 0) {
+            const seen = new Map<number, SeriesMarker<UTCTimestamp>>();
+            for (const m of tmaMarkers) seen.set(m.time as number, m);
+            const md = Array.from(seen.values()).sort((a, b) => (a.time as number) - (b.time as number));
+            createSeriesMarkers(candleSeries, md);
+          }
+        }
+      }
+
+      // Auto Chart Patterns overlay
+      if (showAcp) {
+        const acp = indicators.autoChartPatterns;
+        for (const p of acp.patterns.slice(-15)) {
+          if (p.upperLine.x1 < 0 || p.upperLine.x1 >= klines.length || p.upperLine.x2 < 0 || p.upperLine.x2 >= klines.length) continue;
+          const t1Upper = times[p.upperLine.x1];
+          const t2Upper = times[p.upperLine.x2];
+          const t1Lower = times[p.lowerLine.x1];
+          const t2Lower = times[p.lowerLine.x2];
+          if (!t1Upper || !t2Upper || !t1Lower || !t2Lower) continue;
+
+          const color = p.bias === "bullish" ? "#10b981" : p.bias === "bearish" ? "#ef4444" : "#6b7280";
+
+          chart.addSeries(LineSeries, {
+            color,
+            lineWidth: 2,
+            priceLineVisible: false,
+            lastValueVisible: false,
+            crosshairMarkerVisible: false,
+          }).setData([{ time: t1Upper, value: p.upperLine.y1 }, { time: t2Upper, value: p.upperLine.y2 }]);
+
+          chart.addSeries(LineSeries, {
+            color,
+            lineWidth: 2,
+            priceLineVisible: false,
+            lastValueVisible: false,
+            crosshairMarkerVisible: false,
+          }).setData([{ time: t1Lower, value: p.lowerLine.y1 }, { time: t2Lower, value: p.lowerLine.y2 }]);
+        }
+
+        if (!btResult) {
+          const acpMarkers: SeriesMarker<UTCTimestamp>[] = [];
+          for (const p of acp.patterns.slice(-15)) {
+            if (p.endIndex < 0 || p.endIndex >= klines.length) continue;
+            const isBull = p.bias === "bullish";
+            const isBear = p.bias === "bearish";
+            acpMarkers.push({
+              time: times[p.endIndex],
+              position: isBull ? "belowBar" : "aboveBar",
+              color: isBull ? "#10b981" : isBear ? "#ef4444" : "#6b7280",
+              shape: "circle",
+              text: p.type,
+            });
+          }
+          if (acpMarkers.length > 0) {
+            const seen = new Map<number, SeriesMarker<UTCTimestamp>>();
+            for (const m of acpMarkers) seen.set(m.time as number, m);
+            const md = Array.from(seen.values()).sort((a, b) => (a.time as number) - (b.time as number));
+            createSeriesMarkers(candleSeries, md);
+          }
+        }
+      }
+
+      // Price Action S&R overlay
+      if (showPriceActionSR) {
+        const pasr = indicators.priceActionSR;
+        for (const line of pasr.lines.slice(-30)) {
+          if (line.startIndex < 0 || line.startIndex >= klines.length) continue;
+          const startTime = times[line.startIndex];
+          const endIdx = line.broken && line.brokenAtIndex !== null ? line.brokenAtIndex : Math.min(line.endIndex, klines.length - 1);
+          const endTime = times[endIdx];
+          if (!startTime || !endTime || startTime === endTime) continue;
+          let color: string;
+          let width = 1;
+          let style = 0;
+          if (line.type === "support") color = "rgba(77,208,225,0.7)";
+          else if (line.type === "resistance") color = "rgba(77,208,225,0.7)";
+          else if (line.type === "spike") { color = "rgba(255,183,77,0.6)"; width = 2; style = 2; }
+          else { color = "rgba(129,199,132,0.6)"; width = 2; style = 2; }
+          if (line.broken) color = color.replace(/,0?\.\d+\)/, ",0.25)");
+          chart.addSeries(LineSeries, {
+            color,
+            lineWidth: width as 1 | 2 | 3,
+            lineStyle: style,
+            priceLineVisible: false,
+            lastValueVisible: false,
+            crosshairMarkerVisible: false,
+          }).setData([{ time: startTime, value: line.level }, { time: endTime, value: line.level }]);
+        }
+        // Spike + volatility markers
+        if (!btResult) {
+          const pasrMarkers: SeriesMarker<UTCTimestamp>[] = [];
+          for (const i of pasr.volumeSpikes) {
+            if (i < 0 || i >= klines.length) continue;
+            pasrMarkers.push({
+              time: times[i],
+              position: "aboveBar",
+              color: "#ffb74d",
+              shape: "circle",
+              text: "Vol",
+            });
+          }
+          for (const i of pasr.highVolatility) {
+            if (i < 0 || i >= klines.length) continue;
+            pasrMarkers.push({
+              time: times[i],
+              position: "belowBar",
+              color: "#81c784",
+              shape: "circle",
+              text: "ATR",
+            });
+          }
+          if (pasrMarkers.length > 0) {
+            const seen = new Map<number, SeriesMarker<UTCTimestamp>>();
+            for (const m of pasrMarkers) seen.set(m.time as number, m);
+            const md = Array.from(seen.values()).sort((a, b) => (a.time as number) - (b.time as number));
+            createSeriesMarkers(candleSeries, md);
+          }
+        }
+      }
     }
 
     // ─── Backtest markers on main chart ──────────────────────
@@ -1016,7 +1724,7 @@ export default function KlineGraph({ klines, indicators, btResult, strategyId }:
       sqzChartRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [klines, indicators, btResult, strategyId, isDark, showVwap, showCdcEma, showSupertrendLine, showSmcOb, showSR, showTrendlines, showUtBot, showMsbOb, showRsi, showMacd, showSqz]);
+  }, [klines, indicators, btResult, strategyId, isDark, showVwap, showCdcEma, showSupertrendLine, showSmcOb, showSR, showTrendlines, showUtBot, showMsbOb, showChandelier, showTonyEma, showSuperTrendStrat, showTurtle, showScalpPB, showTrendlineBO, showSmcBO, showSRHV, showCdcV2, showZigzagPP, showPriceActionSMC, showPriceActionSR, showCandlestickP, showPivotHL, showTma, showAcp, showRsi, showMacd, showSqz]);
 
   if (klines.length === 0) return null;
 
@@ -1065,6 +1773,22 @@ export default function KlineGraph({ klines, indicators, btResult, strategyId }:
           <OverlayToggle label="Trendlines" color="#14b8a6" secondColor="#ef4444" active={showTrendlines} onToggle={() => setShowTrendlines(v => !v)} />
           <OverlayToggle label="UT Bot" color="#10b981" secondColor="#ef4444" active={showUtBot} onToggle={() => setShowUtBot(v => !v)} />
           <OverlayToggle label="MSB-OB" color="#10b981" secondColor="#ef4444" active={showMsbOb} onToggle={() => setShowMsbOb(v => !v)} />
+          <OverlayToggle label="Chandelier" color="#10b981" secondColor="#ef4444" active={showChandelier} onToggle={() => setShowChandelier(v => !v)} />
+          <OverlayToggle label="Tony EMA" color="#3b82f6" active={showTonyEma} onToggle={() => setShowTonyEma(v => !v)} />
+          <OverlayToggle label="ST Strat" color="#10b981" secondColor="#ef4444" active={showSuperTrendStrat} onToggle={() => setShowSuperTrendStrat(v => !v)} />
+          <OverlayToggle label="Turtle" color="#0094FF" secondColor="#3b82f6" active={showTurtle} onToggle={() => setShowTurtle(v => !v)} />
+          <OverlayToggle label="Scalp PB" color="#ef4444" secondColor="#3b82f6" active={showScalpPB} onToggle={() => setShowScalpPB(v => !v)} />
+          <OverlayToggle label="TL Break" color="#d42e00" secondColor="#0b8b07" active={showTrendlineBO} onToggle={() => setShowTrendlineBO(v => !v)} />
+          <OverlayToggle label="SM Break" color="#00ffbb" secondColor="#ff1100" active={showSmcBO} onToggle={() => setShowSmcBO(v => !v)} />
+          <OverlayToggle label="SR HVol" color="#20ca26" secondColor="#e92929" active={showSRHV} onToggle={() => setShowSRHV(v => !v)} />
+          <OverlayToggle label="CDC V2" color="#ef4444" secondColor="#3b82f6" active={showCdcV2} onToggle={() => setShowCdcV2(v => !v)} />
+          <OverlayToggle label="ZigZag++" color="#84cc16" secondColor="#ef4444" active={showZigzagPP} onToggle={() => setShowZigzagPP(v => !v)} />
+          <OverlayToggle label="PA-SMC" color="#10b981" secondColor="#ef4444" active={showPriceActionSMC} onToggle={() => setShowPriceActionSMC(v => !v)} />
+          <OverlayToggle label="PA-S&R" color="#4dd0e1" secondColor="#ffb74d" active={showPriceActionSR} onToggle={() => setShowPriceActionSR(v => !v)} />
+          <OverlayToggle label="Candles" color="#10b981" secondColor="#ef4444" active={showCandlestickP} onToggle={() => setShowCandlestickP(v => !v)} />
+          <OverlayToggle label="PivotHL" color="#ef5350" secondColor="#26a69a" active={showPivotHL} onToggle={() => setShowPivotHL(v => !v)} />
+          <OverlayToggle label="TMA" color="#6aff00" secondColor="#ff0500" active={showTma} onToggle={() => setShowTma(v => !v)} />
+          <OverlayToggle label="ACP" color="#10b981" secondColor="#ef4444" active={showAcp} onToggle={() => setShowAcp(v => !v)} />
           <span className="text-[9px] text-muted-foreground/30 mx-0.5">|</span>
           <span className="text-[9px] font-medium text-muted-foreground/60 uppercase tracking-wider mr-1">Panel:</span>
           <OverlayToggle label="RSI" color="#a78bfa" active={showRsiToggle} onToggle={() => setShowRsiToggle(v => !v)} />
@@ -1081,6 +1805,22 @@ export default function KlineGraph({ klines, indicators, btResult, strategyId }:
               setShowTrendlines(false);
               setShowUtBot(false);
               setShowMsbOb(false);
+              setShowChandelier(false);
+              setShowTonyEma(false);
+              setShowSuperTrendStrat(false);
+              setShowTurtle(false);
+              setShowScalpPB(false);
+              setShowTrendlineBO(false);
+              setShowSmcBO(false);
+              setShowSRHV(false);
+              setShowCdcV2(false);
+              setShowZigzagPP(false);
+              setShowPriceActionSMC(false);
+              setShowPriceActionSR(false);
+              setShowCandlestickP(false);
+              setShowPivotHL(false);
+              setShowTma(false);
+              setShowAcp(false);
               setShowRsiToggle(false);
               setShowMacdToggle(false);
               setShowSqzToggle(false);
