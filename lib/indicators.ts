@@ -3034,8 +3034,26 @@ export function candlestickPatterns(
 // ─── Pivot Points High Low (LuxAlgo) ───────────────────────────
 // Regular pivots + "missed" pivots (a pivot in the same direction
 // where the price never produced an opposite pivot in between).
-// Signal heuristic: BUY when a pivot low is confirmed (expect a
-// bounce up), SELL when a pivot high is confirmed.
+//
+// Signal timing — realistic for live/real trading:
+//   The signal is placed at the *detection* bar (= confirmation
+//   bar = pivot bar + `length`), NOT at the historical pivot bar.
+//   At the moment the signal fires, a live bot has actually had
+//   time to observe the pivot since it's `length` bars in the
+//   past — no look-ahead bias.
+//
+// Chart markers — at the historical pivot bar:
+//   `pivots[]` and `zigzag[]` still store the historical pivot
+//   bar, so chart overlay (graph.tsx) draws the marker at its
+//   natural location. The overlay reads from `pivots[]`, not
+//   `signal[]`, so chart visuals are independent of signal timing.
+//
+// Missed pivots (👻): drawn on the chart but do NOT emit signals
+//   — they describe a past missed opportunity we only knew about
+//   retroactively. Acting on a missed_low at the bar where it's
+//   detected would mean buying *after* price has already moved
+//   well above that low; the same detection bar already carries
+//   the actionable signal from the new regular pivot.
 
 export type PPHLPivotType = "regular_high" | "regular_low" | "missed_high" | "missed_low";
 
@@ -3108,7 +3126,8 @@ export function pivotPointsHL(
 
       if (isHigh) {
         if (osDir === 1) {
-          // Missed pivot low between two highs
+          // Missed pivot low between two highs — chart marker only,
+          // no signal (regular_high SELL fires at this same bar i).
           if (minRunIdx >= 0) {
             pivots.push({ index: minRunIdx, price: minRun, type: "missed_low" });
             zigzag.push({ index: minRunIdx, price: minRun });
@@ -3116,7 +3135,7 @@ export function pivotPointsHL(
             lastZigZagPrice = minRun;
           }
         } else if (h[refIdx] < maxRun && maxRunIdx >= 0) {
-          // High didn't break previous max — mark missed
+          // High didn't break previous max — mark missed (chart only).
           pivots.push({ index: maxRunIdx, price: maxRun, type: "missed_high" });
           zigzag.push({ index: maxRunIdx, price: maxRun });
           if (followMinIdx >= 0) {
@@ -3128,7 +3147,7 @@ export function pivotPointsHL(
         }
         pivots.push({ index: refIdx, price: h[refIdx], type: "regular_high" });
         zigzag.push({ index: refIdx, price: h[refIdx] });
-        signal[i] = "SELL";  // Confirmation at current bar i — pivot was at refIdx
+        signal[i] = "SELL";  // Detection-bar signal — no look-ahead.
         lastZigZagIdx = refIdx;
         lastZigZagPrice = h[refIdx];
         maxRun = h[refIdx];
@@ -3136,6 +3155,7 @@ export function pivotPointsHL(
         osDir = 1;
       } else if (isLow) {
         if (osDir === 0) {
+          // Missed pivot high between two lows — chart marker only.
           if (maxRunIdx >= 0) {
             pivots.push({ index: maxRunIdx, price: maxRun, type: "missed_high" });
             zigzag.push({ index: maxRunIdx, price: maxRun });
@@ -3148,7 +3168,7 @@ export function pivotPointsHL(
         }
         pivots.push({ index: refIdx, price: l[refIdx], type: "regular_low" });
         zigzag.push({ index: refIdx, price: l[refIdx] });
-        signal[i] = "BUY";
+        signal[i] = "BUY";  // Detection-bar signal — no look-ahead.
         lastZigZagIdx = refIdx;
         lastZigZagPrice = l[refIdx];
         maxRun = l[refIdx];

@@ -25,6 +25,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Separator } from "@/components/ui/separator";
 import KlineGraph from "@/app/klines/ui/graph";
 import { ThemeToggle } from "@/components/theme-toggle";
+import { CryptoCategoryTabs } from "@/components/cryptocurrency-category-ui";
 import Link from "next/link";
 
 // ─── Constants ─────────────────────────────────────────────────
@@ -565,6 +566,12 @@ export default function KlinesPage() {
           </div>
         </div>
         <Separator />
+
+        {/* ═══ Cryptocurrency Categories (CoinMarketCap) ═══ */}
+        <CryptoCategoryTabs
+          activeSymbol={activeSymbol}
+          onCoinSelect={(pair) => setCustomSymbol(pair)}
+        />
 
         {/* ═══ CONFIG ═══ */}
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-[1fr_650px]">
