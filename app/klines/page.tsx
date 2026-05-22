@@ -36,6 +36,17 @@ const POPULAR_SYMBOLS = [
   "ARBUSDT", "OPUSDT", "SUIUSDT", "INJUSDT", "FETUSDT",
 ];
 
+// Binance Spot REQUEST_WEIGHT limit (per 1 minute)
+const BINANCE_WEIGHT_LIMIT_1M = 6000;
+
+// /api/v3/klines weight ตาม limit param
+function klineWeight(limit: number): number {
+  if (limit <= 100) return 1;
+  if (limit <= 500) return 2;
+  if (limit <= 1000) return 5;
+  return 10;
+}
+
 const INTERVAL_GROUPS: Record<string, Interval[]> = {
   "วินาที": ["1s"],
   "นาที": ["1m", "3m", "5m", "15m", "30m"],
@@ -258,6 +269,64 @@ function EquityChart({ curve, trades }: { curve: number[]; trades: Trade[] }) {
   );
 }
 
+// ─── Rate Limit Bar ────────────────────────────────────────────
+function RateLimitBar({
+  rateLimit,
+}: {
+  rateLimit: {
+    usedWeight1m: number;
+    sessionCalls: number;
+    sessionWeight: number;
+    lastUpdate: Date | null;
+  };
+}) {
+  const pct = (rateLimit.usedWeight1m / BINANCE_WEIGHT_LIMIT_1M) * 100;
+  const barColor =
+    pct >= 80 ? "bg-red-500"
+    : pct >= 50 ? "bg-yellow-500"
+    : "bg-emerald-500";
+  const textColor =
+    pct >= 80 ? "text-red-500"
+    : pct >= 50 ? "text-yellow-500"
+    : "text-emerald-500";
+
+  return (
+    <div className="space-y-1.5">
+      <div className="flex items-center justify-between gap-2 text-[10px]">
+        <span className="font-medium text-muted-foreground">
+          Binance Rate Limit (per นาที)
+        </span>
+        <span className={`tabular-nums font-semibold ${textColor}`}>
+          {rateLimit.usedWeight1m.toLocaleString()} / {BINANCE_WEIGHT_LIMIT_1M.toLocaleString()} weight
+          <span className="ml-1 text-muted-foreground font-normal">
+            ({pct.toFixed(1)}%)
+          </span>
+        </span>
+      </div>
+      <div className="h-1.5 w-full rounded-full bg-muted overflow-hidden">
+        <div
+          className={`h-full transition-all duration-300 ${barColor}`}
+          style={{ width: `${Math.min(pct, 100)}%` }}
+        />
+      </div>
+      <div className="flex items-center justify-between gap-2 text-[10px] text-muted-foreground">
+        <span className="tabular-nums">
+          เซสชั่นนี้: <span className="font-medium text-foreground">{rateLimit.sessionCalls.toLocaleString()}</span> calls ·{" "}
+          <span className="font-medium text-foreground">{rateLimit.sessionWeight.toLocaleString()}</span> weight
+        </span>
+        <span>
+          {rateLimit.lastUpdate
+            ? `อัปเดต ${rateLimit.lastUpdate.toLocaleTimeString()}`
+            : "ยังไม่ได้ดึงข้อมูล"}
+        </span>
+      </div>
+      <p className="text-[9px] text-muted-foreground italic">
+        💡 รีเซ็ตอัตโนมัติทุกต้นนาที · ไม่มี per-day limit สำหรับ klines
+      </p>
+    </div>
+  );
+}
+
 // ═══════════════════════════════════════════════════════════════
 // Main Page
 // ═══════════════════════════════════════════════════════════════
@@ -294,6 +363,14 @@ export default function KlinesPage() {
   // dataShowUI state
   const [csvFiles, setCsvFiles] = useState<string[]>([]);
   const [csvLoading, setCsvLoading] = useState(false);
+
+  // Rate-limit state (Binance REQUEST_WEIGHT — 6000 per 1 minute)
+  const [rateLimit, setRateLimit] = useState<{
+    usedWeight1m: number;
+    sessionCalls: number;
+    sessionWeight: number;
+    lastUpdate: Date | null;
+  }>({ usedWeight1m: 0, sessionCalls: 0, sessionWeight: 0, lastUpdate: null });
 
   const activeSymbol = customSymbol.trim().toUpperCase() || symbol;
 
@@ -351,6 +428,17 @@ export default function KlinesPage() {
     }
   }, [klines]);
 
+  // อัปเดต rate limit หลังจาก fetch /api/klines สำเร็จ
+  const bumpRateLimit = useCallback((res: Response, callLimit: number) => {
+    const headerWeight = parseInt(res.headers.get("x-used-weight-1m") ?? "0", 10);
+    setRateLimit(prev => ({
+      usedWeight1m: Number.isFinite(headerWeight) ? headerWeight : prev.usedWeight1m,
+      sessionCalls: prev.sessionCalls + 1,
+      sessionWeight: prev.sessionWeight + klineWeight(callLimit),
+      lastUpdate: new Date(),
+    }));
+  }, []);
+
   // ─── Fetch Real-time ────────────────────────────────────────
   const fetchRealtime = useCallback(async () => {
     setLoading(true);
@@ -364,12 +452,13 @@ export default function KlinesPage() {
       const params = new URLSearchParams({ symbol: activeSymbol, interval, limit });
       const res = await fetch(`/api/klines?${params}`);
       if (!res.ok) { const b = await res.json(); throw new Error(b.error || `HTTP ${res.status}`); }
+      bumpRateLimit(res, parseInt(limit, 10) || 200);
       const raw: BinanceKlineRaw[] = await res.json();
       setKlines(raw.map(parseKline));
       setLastFetch(new Date());
     } catch (err) { setError(String(err)); }
     finally { setLoading(false); }
-  }, [activeSymbol, interval, limit]);
+  }, [activeSymbol, interval, limit, bumpRateLimit]);
 
   // ─── Download (ตาม mode: Realtime หรือ Historical) ──────────
   const downloadRealtime = useCallback(async () => {
@@ -399,6 +488,7 @@ export default function KlinesPage() {
           });
           const res = await fetch(`/api/klines?${params}`, { signal: controller.signal });
           if (!res.ok) { const b = await res.json(); throw new Error(b.error || `HTTP ${res.status}`); }
+          bumpRateLimit(res, 1000);
           const raw: BinanceKlineRaw[] = await res.json();
           if (raw.length === 0) break;
           const parsed = raw.map(parseKline);
@@ -413,6 +503,7 @@ export default function KlinesPage() {
         const params = new URLSearchParams({ symbol: activeSymbol, interval, limit });
         const res = await fetch(`/api/klines?${params}`, { signal: controller.signal });
         if (!res.ok) { const b = await res.json(); throw new Error(b.error || `HTTP ${res.status}`); }
+        bumpRateLimit(res, parseInt(limit, 10) || 200);
         const raw: BinanceKlineRaw[] = await res.json();
         all = raw.map(parseKline);
       }
@@ -441,7 +532,7 @@ export default function KlinesPage() {
     } finally {
       setLoading(false); setBacktestProgress(null); abortRef.current = null;
     }
-  }, [activeSymbol, interval, limit, startTime, endTime]);
+  }, [activeSymbol, interval, limit, startTime, endTime, bumpRateLimit]);
 
   // ─── Fetch Historical ──────────────────────────────────────
   const fetchHistorical = useCallback(async () => {
@@ -464,6 +555,7 @@ export default function KlinesPage() {
         });
         const res = await fetch(`/api/klines?${params}`, { signal: controller.signal });
         if (!res.ok) { const b = await res.json(); throw new Error(b.error || `HTTP ${res.status}`); }
+        bumpRateLimit(res, 1000);
         const raw: BinanceKlineRaw[] = await res.json();
         if (raw.length === 0) break;
         const parsed = raw.map(parseKline);
@@ -480,7 +572,7 @@ export default function KlinesPage() {
     } finally {
       setLoading(false); setBacktestProgress(null); abortRef.current = null;
     }
-  }, [activeSymbol, interval, startTime, endTime]);
+  }, [activeSymbol, interval, startTime, endTime, bumpRateLimit]);
 
   // ─── Run Backtest ───────────────────────────────────────────
   const runBt = useCallback(() => {
@@ -666,6 +758,11 @@ export default function KlinesPage() {
                   </span>
                 )}
               </div>
+
+              <Separator />
+
+              {/* Binance Rate Limit (REQUEST_WEIGHT — 6,000 per นาที) */}
+              <RateLimitBar rateLimit={rateLimit} />
             </CardContent>
           </Card>
         </div>

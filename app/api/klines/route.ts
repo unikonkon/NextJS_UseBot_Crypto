@@ -42,10 +42,12 @@ export async function GET(request: NextRequest) {
     }
 
     const data = await res.json();
+    const usedWeight1m = res.headers.get("x-mbx-used-weight-1m") ?? "0";
 
     return NextResponse.json(data, {
       headers: {
         "Cache-Control": "public, s-maxage=5, stale-while-revalidate=10",
+        "x-used-weight-1m": usedWeight1m,
       },
     });
   } catch (err) {
