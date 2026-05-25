@@ -506,6 +506,7 @@ export default function KlinesPage() {
   const [multiBtResults, setMultiBtResults] = useState<MultiBtRow[] | null>(null);
   const [multiBtRunning, setMultiBtRunning] = useState(false);
   const [multiBtExpanded, setMultiBtExpanded] = useState<Set<string>>(new Set());
+  const [multiBtSort, setMultiBtSort] = useState<"pnl" | "strategy" | "combo">("pnl");
 
   const activeSymbol = customSymbol.trim().toUpperCase() || symbol;
 
@@ -1069,6 +1070,31 @@ export default function KlinesPage() {
     };
   }, [klines]);
 
+  // ─── จัดเรียง/จัดกลุ่มผลลัพธ์ Multi-Backtest ───────────────────
+  // pnl: เรียงกำไรล้วน | strategy: กลุ่มกลยุทธ์เดียวกันชิดกัน | combo: กลุ่มคู่เหรียญ·ช่วงชิดกัน
+  // (ภายในกลุ่ม + ลำดับกลุ่ม เรียงจากกำไรมาก→น้อย)
+  const sortedMultiBtResults = useMemo(() => {
+    if (!multiBtResults) return null;
+    if (multiBtSort === "pnl") {
+      return [...multiBtResults].sort((a, b) => b.result.totalPnlPct - a.result.totalPnlPct);
+    }
+    const keyFn = multiBtSort === "strategy"
+      ? (r: MultiBtRow) => r.strategyName
+      : (r: MultiBtRow) => r.comboKey;
+    const groups = new Map<string, MultiBtRow[]>();
+    for (const r of multiBtResults) {
+      const k = keyFn(r);
+      if (!groups.has(k)) groups.set(k, []);
+      groups.get(k)!.push(r);
+    }
+    for (const arr of groups.values()) {
+      arr.sort((a, b) => b.result.totalPnlPct - a.result.totalPnlPct);
+    }
+    return Array.from(groups.values())
+      .sort((a, b) => b[0].result.totalPnlPct - a[0].result.totalPnlPct)
+      .flat();
+  }, [multiBtResults, multiBtSort]);
+
   return (
     <div className="min-h-screen bg-background text-foreground">
       <div className="mx-auto max-w-[1400px] px-4 py-6 space-y-4">
@@ -1569,6 +1595,34 @@ export default function KlinesPage() {
               )}
               {multiBtResults && multiBtResults.length > 0 && (
                 <div className="space-y-2">
+                  {/* Filter / จัดกลุ่ม */}
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <span className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground mr-1">
+                      จัดเรียง:
+                    </span>
+                    {([
+                      { id: "pnl", label: "กำไรสูงสุด" },
+                      { id: "strategy", label: "ตามกลยุทธ์" },
+                      { id: "combo", label: "ตามคู่เหรียญ·ช่วง" },
+                    ] as const).map(opt => (
+                      <button
+                        key={opt.id}
+                        onClick={() => setMultiBtSort(opt.id)}
+                        className={`rounded border px-2 py-0.5 text-[11px] transition-colors ${
+                          multiBtSort === opt.id
+                            ? "border-primary bg-primary/15 text-primary font-semibold"
+                            : "border-border text-muted-foreground hover:bg-muted"
+                        }`}
+                      >
+                        {opt.label}
+                      </button>
+                    ))}
+                    {multiBtSort !== "pnl" && (
+                      <span className="text-[10px] text-muted-foreground">
+                        (กลุ่มเดียวกันชิดกัน · เรียงกำไรมาก→น้อย)
+                      </span>
+                    )}
+                  </div>
                   <div className="rounded-md border">
                     <Table>
                       <TableHeader>
@@ -1587,15 +1641,18 @@ export default function KlinesPage() {
                         </TableRow>
                       </TableHeader>
                       <TableBody>
-                        {multiBtResults.map((row, idx) => {
+                        {(sortedMultiBtResults ?? multiBtResults).map((row, idx, arr) => {
                           const r = row.result;
                           const rowKey = `${row.strategyId}::${row.comboKey}`;
                           const isExpanded = multiBtExpanded.has(rowKey);
                           const diff = r.totalPnlPct - r.buyAndHoldPct;
+                          // เส้นแบ่งกลุ่ม: เมื่ออยู่โหมดจัดกลุ่ม และ key กลุ่มต่างจากแถวก่อนหน้า
+                          const groupOf = (rr: MultiBtRow) => multiBtSort === "strategy" ? rr.strategyName : rr.comboKey;
+                          const isGroupStart = multiBtSort !== "pnl" && idx > 0 && groupOf(arr[idx - 1]) !== groupOf(row);
                           return (
                             <React.Fragment key={rowKey}>
                               <TableRow
-                                className="cursor-pointer hover:bg-muted/50"
+                                className={`cursor-pointer hover:bg-muted/50 ${isGroupStart ? "border-t-2 border-t-primary/30" : ""}`}
                                 onClick={() =>
                                   setMultiBtExpanded(prev => {
                                     const next = new Set(prev);
