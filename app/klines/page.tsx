@@ -283,12 +283,12 @@ function RateLimitBar({
   const pct = (rateLimit.usedWeight1m / BINANCE_WEIGHT_LIMIT_1M) * 100;
   const barColor =
     pct >= 80 ? "bg-red-500"
-    : pct >= 50 ? "bg-yellow-500"
-    : "bg-emerald-500";
+      : pct >= 50 ? "bg-yellow-500"
+        : "bg-emerald-500";
   const textColor =
     pct >= 80 ? "text-red-500"
-    : pct >= 50 ? "text-yellow-500"
-    : "text-emerald-500";
+      : pct >= 50 ? "text-yellow-500"
+        : "text-emerald-500";
 
   return (
     <div className="space-y-1.5">
@@ -324,6 +324,56 @@ function RateLimitBar({
         💡 รีเซ็ตอัตโนมัติทุกต้นนาที · ไม่มี per-day limit สำหรับ klines
       </p>
     </div>
+  );
+}
+
+// ─── Types: multi-fetch ───────────────────────────────────────
+type PairSpec = { symbol: string; interval: Interval; limit: number };
+type LoadedCombo = {
+  key: string;
+  symbol: string;
+  interval: Interval;
+  limit: number;
+  klines: KlineData[];
+  loadedAt: Date;
+  weight: number;
+};
+type MultiBtRow = {
+  strategyId: StrategyId;
+  strategyName: string;
+  comboKey: string;
+  symbol: string;
+  interval: Interval;
+  result: BacktestResult;
+};
+
+const comboKey = (s: string, i: string) => `${s}_${i}`;
+const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
+
+// ─── Mini sparkline (close prices) ────────────────────────────
+function Sparkline({ klines }: { klines: KlineData[] }) {
+  if (klines.length < 2) return <div className="h-8 w-full bg-muted/30" />;
+  const closes = klines.map(k => +k.close);
+  const min = Math.min(...closes);
+  const max = Math.max(...closes);
+  const range = max - min || 1;
+  const w = 100;
+  const h = 32;
+  const pts = closes.map((c, i) => {
+    const x = (i / (closes.length - 1)) * w;
+    const y = h - ((c - min) / range) * h;
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(" ");
+  const isUp = closes[closes.length - 1] >= closes[0];
+  return (
+    <svg viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none" className="h-8 w-full">
+      <polyline
+        fill="none"
+        stroke={isUp ? "rgb(16 185 129)" : "rgb(239 68 68)"}
+        strokeWidth="1.2"
+        points={pts}
+      />
+    </svg>
   );
 }
 
@@ -371,6 +421,23 @@ export default function KlinesPage() {
     sessionWeight: number;
     lastUpdate: Date | null;
   }>({ usedWeight1m: 0, sessionCalls: 0, sessionWeight: 0, lastUpdate: null });
+
+  // Ref ที่ sync จาก rateLimit เพื่อให้ async loop อ่านค่าล่าสุดได้
+  const rateLimitRef = useRef(rateLimit);
+  useEffect(() => { rateLimitRef.current = rateLimit; }, [rateLimit]);
+
+  // Multi-pair state
+  const [selectedPairs, setSelectedPairs] = useState<PairSpec[]>([]);
+  const [loadedCombos, setLoadedCombos] = useState<Map<string, LoadedCombo>>(new Map());
+  const [activeComboKey, setActiveComboKey] = useState<string | null>(null);
+  const [batchProgress, setBatchProgress] = useState<{ current: number; total: number; waiting: boolean } | null>(null);
+  const [batchRunning, setBatchRunning] = useState(false);
+  const batchAbortRef = useRef<AbortController | null>(null);
+
+  // Multi-backtest state
+  const [multiBtResults, setMultiBtResults] = useState<MultiBtRow[] | null>(null);
+  const [multiBtRunning, setMultiBtRunning] = useState(false);
+  const [multiBtExpanded, setMultiBtExpanded] = useState<Set<string>>(new Set());
 
   const activeSymbol = customSymbol.trim().toUpperCase() || symbol;
 
@@ -438,6 +505,166 @@ export default function KlinesPage() {
       lastUpdate: new Date(),
     }));
   }, []);
+
+  // ─── Rate limit gate: รอจนกว่าจะมี capacity ──────────────────
+  // ถ้า usedWeight1m + cost > 90% ของ limit → รอ
+  // ถ้า lastUpdate ผ่านมา > 65 วินาที → assume Binance reset counter แล้ว → ไปต่อ
+  const waitForCapacity = useCallback(async (cost: number, signal: AbortSignal): Promise<void> => {
+    const THRESHOLD = BINANCE_WEIGHT_LIMIT_1M * 0.9;
+    while (true) {
+      if (signal.aborted) throw new Error("aborted");
+      const used = rateLimitRef.current.usedWeight1m;
+      const lastMs = rateLimitRef.current.lastUpdate?.getTime() ?? 0;
+      const elapsed = Date.now() - lastMs;
+      // Binance reset ทุกต้นนาที — ถ้า counter เก่ากว่า 65s ถือว่ารีเซ็ตแล้ว
+      if (lastMs > 0 && elapsed > 65000) return;
+      if (used + cost <= THRESHOLD) return;
+      setBatchProgress(p => p ? { ...p, waiting: true } : p);
+      await sleep(3000);
+    }
+  }, []);
+
+  // ─── Add/Remove pairs ───────────────────────────────────────
+  const addPairToBatch = useCallback(() => {
+    const sym = activeSymbol;
+    const intv = interval;
+    const lim = parseInt(limit, 10) || 200;
+    const key = comboKey(sym, intv);
+    setSelectedPairs(prev => {
+      if (prev.some(p => comboKey(p.symbol, p.interval) === key)) return prev;
+      return [...prev, { symbol: sym, interval: intv, limit: lim }];
+    });
+  }, [activeSymbol, interval, limit]);
+
+  const removePair = useCallback((key: string) => {
+    setSelectedPairs(prev => prev.filter(p => comboKey(p.symbol, p.interval) !== key));
+  }, []);
+
+  const clearPairs = useCallback(() => setSelectedPairs([]), []);
+
+  // ─── Fetch ทุก pair (พร้อม rate-limit gate) ─────────────────
+  const fetchAllPairs = useCallback(async () => {
+    if (selectedPairs.length === 0) return;
+    setBatchRunning(true);
+    setError(null);
+    setBatchProgress({ current: 0, total: selectedPairs.length, waiting: false });
+    const controller = new AbortController();
+    batchAbortRef.current = controller;
+    try {
+      for (let i = 0; i < selectedPairs.length; i++) {
+        const pair = selectedPairs[i];
+        if (controller.signal.aborted) break;
+        setBatchProgress({ current: i, total: selectedPairs.length, waiting: false });
+
+        const cost = klineWeight(pair.limit);
+        await waitForCapacity(cost, controller.signal);
+
+        const params = new URLSearchParams({
+          symbol: pair.symbol,
+          interval: pair.interval,
+          limit: String(pair.limit),
+        });
+        const res = await fetch(`/api/klines?${params}`, { signal: controller.signal });
+        if (!res.ok) {
+          const b = await res.json().catch(() => ({}));
+          throw new Error(`${pair.symbol}·${pair.interval}: ${b.error || `HTTP ${res.status}`}`);
+        }
+        bumpRateLimit(res, pair.limit);
+        const raw: BinanceKlineRaw[] = await res.json();
+        const klinesData = raw.map(parseKline);
+        const key = comboKey(pair.symbol, pair.interval);
+        const combo: LoadedCombo = {
+          key,
+          symbol: pair.symbol,
+          interval: pair.interval,
+          limit: pair.limit,
+          klines: klinesData,
+          loadedAt: new Date(),
+          weight: cost,
+        };
+        setLoadedCombos(prev => new Map(prev).set(key, combo));
+        // เปิดอันแรกที่โหลดสำเร็จเป็น active
+        setActiveComboKey(prev => prev ?? key);
+      }
+      setBatchProgress({ current: selectedPairs.length, total: selectedPairs.length, waiting: false });
+    } catch (err) {
+      if (!controller.signal.aborted) setError(String(err));
+    } finally {
+      setBatchRunning(false);
+      setTimeout(() => setBatchProgress(null), 1500);
+      batchAbortRef.current = null;
+    }
+  }, [selectedPairs, bumpRateLimit, waitForCapacity]);
+
+  // ─── Combo actions ──────────────────────────────────────────
+  const selectCombo = useCallback((key: string) => {
+    setActiveComboKey(key);
+    const combo = loadedCombos.get(key);
+    if (combo) {
+      setKlines(combo.klines);
+      setBtResult(null);
+      setAllBtResults(null);
+    }
+  }, [loadedCombos]);
+
+  const removeCombo = useCallback((key: string) => {
+    setLoadedCombos(prev => {
+      const next = new Map(prev);
+      next.delete(key);
+      return next;
+    });
+    setActiveComboKey(prev => {
+      if (prev !== key) return prev;
+      const remaining = Array.from(loadedCombos.keys()).filter(k => k !== key);
+      return remaining[0] ?? null;
+    });
+    setMultiBtResults(prev => prev?.filter(r => r.comboKey !== key) ?? null);
+  }, [loadedCombos]);
+
+  const clearLoadedCombos = useCallback(() => {
+    setLoadedCombos(new Map());
+    setActiveComboKey(null);
+    setMultiBtResults(null);
+    setMultiBtExpanded(new Set());
+  }, []);
+
+  // ─── Multi-Backtest: ทุก strategies × ทุก combos ────────────
+  const runMultiBacktest = useCallback(() => {
+    if (loadedCombos.size === 0) {
+      setError("ต้องโหลดคู่เหรียญอย่างน้อย 1 คู่ก่อน");
+      return;
+    }
+    setMultiBtRunning(true);
+    setMultiBtResults(null);
+    setError(null);
+    setTimeout(() => {
+      try {
+        const fees = parseFloat(feesPct) || 0.1;
+        const rows: MultiBtRow[] = [];
+        for (const combo of loadedCombos.values()) {
+          if (combo.klines.length < 50) continue;
+          for (const strat of STRATEGIES) {
+            const result = runBacktest(combo.klines, strat.id, { ...strat.params }, fees);
+            rows.push({
+              strategyId: strat.id,
+              strategyName: strat.name,
+              comboKey: combo.key,
+              symbol: combo.symbol,
+              interval: combo.interval,
+              result,
+            });
+          }
+        }
+        rows.sort((a, b) => b.result.totalPnlPct - a.result.totalPnlPct);
+        setMultiBtResults(rows);
+        setMultiBtExpanded(new Set());
+      } catch (err) {
+        setError(String(err));
+      } finally {
+        setMultiBtRunning(false);
+      }
+    }, 10);
+  }, [loadedCombos, feesPct]);
 
   // ─── Fetch Real-time ────────────────────────────────────────
   const fetchRealtime = useCallback(async () => {
@@ -574,6 +801,12 @@ export default function KlinesPage() {
     }
   }, [activeSymbol, interval, startTime, endTime, bumpRateLimit]);
 
+  // ─── ดึงข้อมูล 1 เหรียญ (เลือก mode ตาม startTime) ─────────────
+  const fetchSingle = useCallback(() => {
+    if (startTime) fetchHistorical();
+    else fetchRealtime();
+  }, [startTime, fetchHistorical, fetchRealtime]);
+
   // ─── Run Backtest ───────────────────────────────────────────
   const runBt = useCallback(() => {
     if (klines.length < 50) { setError("ต้องมีอย่างน้อย 50 แท่งเทียนเพื่อรัน Backtest"); return; }
@@ -665,33 +898,43 @@ export default function KlinesPage() {
           onCoinSelect={(pair) => setCustomSymbol(pair)}
         />
 
-        {/* ═══ CONFIG ═══ */}
-        <div className="grid grid-cols-1 gap-4 lg:grid-cols-[1fr_650px]">
-          <Card size="sm">
-            <CardHeader>
-              <CardTitle>ตั้งค่า</CardTitle>
-              <CardDescription>เลือกคู่เหรียญและช่วงเวลา แล้วดึงข้อมูลแบบเรียลไทม์หรือย้อนหลัง</CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              {/* Shared: Symbol / Custom / Interval */}
-              <div className="flex flex-wrap gap-3 items-center">
-                <Field label="คู่เหรียญ">
-                  <Select value={symbol} onValueChange={(v) => { if (v) { setSymbol(v); setCustomSymbol(""); } }}>
-                    <SelectTrigger className="w-36"><SelectValue /></SelectTrigger>
-                    <SelectContent>
-                      <SelectGroup><SelectLabel>ยอดนิยม</SelectLabel>
-                        {POPULAR_SYMBOLS.map(s => <SelectItem key={s} value={s}>{s}</SelectItem>)}
-                      </SelectGroup>
-                    </SelectContent>
-                  </Select>
-                </Field>
-                <Field label="">
-                  <p className="text-[9px] font-medium uppercase tracking-wider text-muted-foreground">กำหนดเอง</p>
-                  <Input placeholder="เช่น PEPEUSDT" value={customSymbol} onChange={e => setCustomSymbol(e.target.value)} className="w-36" />
-                </Field>
-                <Field label="ช่วงเวลา">
+        {/* ═══ CONFIG + FETCH (รวม flow เป็นขั้นตอน) ═══ */}
+        <Card size="sm">
+          <CardHeader>
+            <CardTitle>ตั้งค่า &amp; ดึงข้อมูล</CardTitle>
+            <CardDescription>
+              เลือกคู่เหรียญ → ช่วงเวลา → จำนวนแท่งเทียน/ช่วงวันที่ → ดึงข้อมูล 1 เหรียญ หรือ เพิ่มเข้า Batch
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            {/* Step 1: เลือกคู่เหรียญ */}
+            <div className="flex flex-wrap gap-10 items-end">
+              <div>
+                <StepLabel num={1} text="เลือกคู่เหรียญ" />
+                <div className="flex flex-wrap gap-3 items-end">
+                  <Field label="ยอดนิยม">
+                    <Select value={symbol} onValueChange={(v) => { if (v) { setSymbol(v); setCustomSymbol(""); } }}>
+                      <SelectTrigger className="w-36"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectGroup><SelectLabel>ยอดนิยม</SelectLabel>
+                          {POPULAR_SYMBOLS.map(s => <SelectItem key={s} value={s}>{s}</SelectItem>)}
+                        </SelectGroup>
+                      </SelectContent>
+                    </Select>
+                  </Field>
+                  <Field label="กำหนดเอง">
+                    <Input placeholder="เช่น PEPEUSDT" value={customSymbol} onChange={e => setCustomSymbol(e.target.value)} className="w-36" />
+                  </Field>
+                  <Badge variant="secondary" className="h-9 px-3 font-mono">{activeSymbol}</Badge>
+                </div>
+              </div>
+
+              {/* Step 2: ช่วงเวลา */}
+              <div>
+                <StepLabel num={2} text="ช่วงเวลา" />
+                <Field label="Interval">
                   <Select value={interval} onValueChange={(v) => { if (v) setInterval(v as Interval); }}>
-                    <SelectTrigger className="w-24"><SelectValue /></SelectTrigger>
+                    <SelectTrigger className="w-28"><SelectValue /></SelectTrigger>
                     <SelectContent>
                       {Object.entries(INTERVAL_GROUPS).map(([g, ints]) => (
                         <SelectGroup key={g}><SelectLabel>{g}</SelectLabel>
@@ -702,70 +945,79 @@ export default function KlinesPage() {
                   </Select>
                 </Field>
               </div>
+            </div>
 
-            </CardContent>
-          </Card>
 
-          {/* Fetch Data */}
-          <Card size="sm">
-            <CardHeader><CardTitle>ดึงข้อมูล</CardTitle></CardHeader>
-            <CardContent className="space-y-4">
-              {/* Real-time fetch */}
-              <div className="space-y-2">
-                <div className="flex items-end gap-2">
-                  <Field label="ดึงข้อมูลเรียลไทม์ จำนวนแท่งเทียน">
+            <Separator />
+
+            {/* Step 3: จำนวนแท่งเทียน หรือ เริ่มต้น-สิ้นสุด */}
+            <div className="flex flex-wrap gap-10 items-end">
+              <div>
+                <StepLabel num={3} text="จำนวนแท่งเทียน หรือ กำหนดช่วงเวลา เริ่มต้น–สิ้นสุด" />
+                <div className="flex flex-wrap gap-3 items-end">
+                  <Field label="จำนวนแท่งเทียน (เรียลไทม์)">
                     <Select value={limit} onValueChange={(v) => { if (v) setLimit(v); }}>
-                      <SelectTrigger className="w-42"><SelectValue /></SelectTrigger>
+                      <SelectTrigger className="w-28"><SelectValue /></SelectTrigger>
                       <SelectContent>
                         {["50", "100", "200", "500", "1000"].map(l => <SelectItem key={l} value={l}>{l}</SelectItem>)}
                       </SelectContent>
                     </Select>
                   </Field>
-                  <Button onClick={fetchRealtime} disabled={loading} className="h-9">
-                    {loading ? "กำลังดึง..." : "ดึงข้อมูลล่าสุด"}
-                  </Button>
-
-                  <Field label="ดาวโหลดไฟล์ ข้อมูลเรียลไทม์ จำนวนแท่งเทียน">
-                    <Button onClick={downloadRealtime} disabled={loading} className="h-9">
-                      {loading ? "กำลังดาวโหลด..." : "ดาวโหลดไฟล์"}
-                    </Button>
-                  </Field>
-
-                </div>
-              </div>
-
-              <Separator />
-
-              {/* Historical fetch */}
-              <div className="space-y-2">
-                <div className="flex flex-wrap items-end gap-2">
-                  <Field label="ข้อมูลย้อนหลัง เริ่มต้น">
-                    <Input type="datetime-local" value={startTime} onChange={e => setStartTime(e.target.value)} className="w-44 ml-1" />
+                  <span className="pb-2 text-[10px] font-medium text-muted-foreground">— หรือ —</span>
+                  <Field label="ย้อนหลัง: เริ่มต้น">
+                    <Input type="datetime-local" value={startTime} onChange={e => setStartTime(e.target.value)} className="w-44" />
                   </Field>
                   <Field label="สิ้นสุด">
-                    <Input type="datetime-local" value={endTime} onChange={e => setEndTime(e.target.value)} className="w-44 ml-1" />
+                    <Input type="datetime-local" value={endTime} onChange={e => setEndTime(e.target.value)} className="w-44" />
                   </Field>
-                  <Button onClick={fetchHistorical} disabled={loading} className="h-9">
-                    {loading ? "กำลังดึง..." : "ดึงข้อมูลย้อนหลัง"}
+                  {startTime && (
+                    <Button variant="ghost" size="sm" className="h-9 text-[10px]" onClick={() => { setStartTime(""); setEndTime(""); }}>
+                      ล้างวันที่
+                    </Button>
+                  )}
+                </div>
+                <p className="mt-1.5 text-[10px] text-muted-foreground">
+                  {startTime
+                    ? "🕐 โหมด: ดึงย้อนหลัง — ใช้ช่วงเวลา เริ่มต้น–สิ้นสุด"
+                    : `⚡ โหมด: เรียลไทม์ — ดึง ${limit} แท่งล่าสุด`}
+                </p>
+              </div>
+
+              {/* Step 4: ปุ่มดำเนินการ */}
+              <div>
+                <StepLabel num={4} text="ดำเนินการ" />
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button onClick={fetchSingle} disabled={loading} className="h-9">
+                    {loading ? "กำลังดึง..." : "ดึงข้อมูล 1 เหรียญ"}
+                  </Button>
+                  <Button
+                    onClick={addPairToBatch}
+                    variant="outline"
+                    className="h-9 border-emerald-500/30 bg-emerald-500/10 text-emerald-500 hover:bg-emerald-500/20"
+                  >
+                    + เพิ่มเข้า Batch ({activeSymbol}·{interval})
+                  </Button>
+                  <Button onClick={downloadRealtime} disabled={loading} variant="ghost" size="sm" className="h-9 text-[11px]">
+                    ⬇ ดาวน์โหลด CSV
                   </Button>
                   {loading && (
                     <Button variant="destructive" size="sm" onClick={() => abortRef.current?.abort()}>ยกเลิก</Button>
                   )}
                 </div>
                 {backtestProgress && (
-                  <span className="text-[10px] text-muted-foreground animate-pulse">
+                  <span className="mt-1.5 block text-[10px] text-muted-foreground animate-pulse">
                     {backtestProgress.current.toLocaleString()} แท่งเทียน...
                   </span>
                 )}
               </div>
+            </div>
 
-              <Separator />
+            <Separator />
 
-              {/* Binance Rate Limit (REQUEST_WEIGHT — 6,000 per นาที) */}
-              <RateLimitBar rateLimit={rateLimit} />
-            </CardContent>
-          </Card>
-        </div>
+            {/* Binance Rate Limit (REQUEST_WEIGHT — 6,000 per นาที) */}
+            <RateLimitBar rateLimit={rateLimit} />
+          </CardContent>
+        </Card>
 
         {/* ═══ dataShowUI: Load from saved CSV files ═══ */}
         {csvFiles.length > 0 && (
@@ -795,6 +1047,155 @@ export default function KlinesPage() {
           </Card>
         )}
 
+        {/* ═══ Multi-Pair Batch: คู่ที่เลือกไว้ ═══ */}
+        {selectedPairs.length > 0 && (
+          <Card size="sm">
+            <CardHeader>
+              <div className="flex items-center justify-between gap-2 flex-wrap">
+                <div>
+                  <CardTitle>Batch: คู่ที่เลือก ({selectedPairs.length})</CardTitle>
+                  <CardDescription>
+                    รวม weight โดยประมาณ: {selectedPairs.reduce((s, p) => s + klineWeight(p.limit), 0)} · ระบบจะรอ rate limit อัตโนมัติ
+                  </CardDescription>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Button
+                    onClick={fetchAllPairs}
+                    disabled={batchRunning || selectedPairs.length === 0}
+                    className="h-9"
+                  >
+                    {batchRunning ? "กำลังดึง..." : `ดึงทั้งหมด (${selectedPairs.length})`}
+                  </Button>
+                  {batchRunning && (
+                    <Button
+                      variant="destructive"
+                      size="sm"
+                      onClick={() => batchAbortRef.current?.abort()}
+                    >
+                      ยกเลิก
+                    </Button>
+                  )}
+                  <Button variant="outline" size="sm" onClick={clearPairs} disabled={batchRunning}>
+                    ล้างทั้งหมด
+                  </Button>
+                </div>
+              </div>
+            </CardHeader>
+            <CardContent className="space-y-2">
+              <div className="flex flex-wrap gap-1.5">
+                {selectedPairs.map(p => {
+                  const k = comboKey(p.symbol, p.interval);
+                  const loaded = loadedCombos.has(k);
+                  return (
+                    <div
+                      key={k}
+                      className={`inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-[11px] ${loaded
+                        ? "border-emerald-500/40 bg-emerald-500/10"
+                        : "border-border bg-muted/40"
+                        }`}
+                    >
+                      <span className="font-mono font-semibold">{p.symbol}</span>
+                      <span className="text-muted-foreground">·</span>
+                      <span className="font-mono">{p.interval}</span>
+                      <span className="text-muted-foreground">·</span>
+                      <span className="text-muted-foreground tabular-nums">{p.limit}</span>
+                      {loaded && <span className="text-emerald-500 text-[10px]">✓</span>}
+                      <button
+                        onClick={() => removePair(k)}
+                        disabled={batchRunning}
+                        className="ml-0.5 text-muted-foreground hover:text-red-500 disabled:opacity-30"
+                        aria-label="ลบ"
+                      >
+                        ×
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+              {batchProgress && (
+                <div className="space-y-1">
+                  <div className="flex items-center justify-between text-[10px] text-muted-foreground">
+                    <span>
+                      {batchProgress.waiting
+                        ? "⏳ รอ rate limit รีเซ็ต..."
+                        : `กำลังดึง ${batchProgress.current + 1}/${batchProgress.total}`}
+                    </span>
+                    <span className="tabular-nums">
+                      {batchProgress.current}/{batchProgress.total}
+                    </span>
+                  </div>
+                  <div className="h-1 w-full rounded-full bg-muted overflow-hidden">
+                    <div
+                      className={`h-full transition-all ${batchProgress.waiting ? "bg-yellow-500 animate-pulse" : "bg-emerald-500"}`}
+                      style={{ width: `${(batchProgress.current / batchProgress.total) * 100}%` }}
+                    />
+                  </div>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        )}
+
+        {/* ═══ Loaded Combos Grid: คู่ที่โหลดแล้ว ═══ */}
+        {loadedCombos.size > 0 && (
+          <Card size="sm">
+            <CardHeader>
+              <div className="flex items-center justify-between gap-2 flex-wrap">
+                <div>
+                  <CardTitle>คู่ที่โหลดแล้ว ({loadedCombos.size})</CardTitle>
+                  <CardDescription>คลิกการ์ดเพื่อดูกราฟด้านล่าง · ใช้รัน Backtest ทั้งหมดได้</CardDescription>
+                </div>
+                <Button variant="outline" size="sm" onClick={clearLoadedCombos}>
+                  ล้างทั้งหมด
+                </Button>
+              </div>
+            </CardHeader>
+            <CardContent>
+              <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
+                {Array.from(loadedCombos.values()).map(combo => {
+                  const isActive = activeComboKey === combo.key;
+                  const c = combo.klines.map(k => +k.close);
+                  const last = c[c.length - 1] ?? 0;
+                  const first = c[0] ?? 0;
+                  const pct = first ? ((last - first) / first) * 100 : 0;
+                  return (
+                    <div
+                      key={combo.key}
+                      className={`relative rounded-md border p-2 cursor-pointer transition-all hover:bg-muted/50 ${isActive ? "border-emerald-500 bg-emerald-500/5 ring-1 ring-emerald-500/30" : "border-border"
+                        }`}
+                      onClick={() => selectCombo(combo.key)}
+                    >
+                      <button
+                        onClick={(e) => { e.stopPropagation(); removeCombo(combo.key); }}
+                        className="absolute right-1 top-1 text-[10px] text-muted-foreground hover:text-red-500 px-1"
+                        aria-label="ลบ"
+                      >
+                        ×
+                      </button>
+                      <div className="flex items-baseline justify-between gap-1 pr-3">
+                        <span className="font-mono text-xs font-semibold truncate">{combo.symbol}</span>
+                        <span className="font-mono text-[10px] text-muted-foreground">{combo.interval}</span>
+                      </div>
+                      <Sparkline klines={combo.klines} />
+                      <div className="flex items-baseline justify-between text-[10px]">
+                        <span className={`tabular-nums font-medium ${pct >= 0 ? "text-emerald-500" : "text-red-500"}`}>
+                          {pct >= 0 ? "+" : ""}{pct.toFixed(2)}%
+                        </span>
+                        <span className="tabular-nums text-muted-foreground">{combo.klines.length} แท่ง</span>
+                      </div>
+                      {isActive && (
+                        <div className="text-[9px] text-emerald-500 mt-0.5 text-center font-medium">
+                          ▶ กำลังแสดงกราฟ
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
         {/* Error */}
         {error && <ErrorCard message={error} />}
 
@@ -806,6 +1207,181 @@ export default function KlinesPage() {
             btResult={btResult}
             strategyId={strategyId}
           />
+        )}
+
+        {/* ═══ Multi-Backtest: ทุก strategy × ทุก combo ═══ */}
+        {loadedCombos.size > 0 && (
+          <Card size="sm">
+            <CardHeader className="border-b">
+              <div className="flex items-center justify-between gap-2 flex-wrap">
+                <div>
+                  <CardTitle>
+                    ทดสอบกลยุทธ์ย้อนหลัง × ทุกคู่ที่โหลดมา
+                  </CardTitle>
+                  <CardDescription>
+                    รัน {STRATEGIES.length} strategies × {loadedCombos.size} combos = {STRATEGIES.length * loadedCombos.size} ผลลัพธ์ — เรียงตามกำไรสูงสุด
+                  </CardDescription>
+                </div>
+                <Button onClick={runMultiBacktest} disabled={multiBtRunning} className="h-9 shrink-0">
+                  {multiBtRunning ? "กำลังรัน..." : "รัน Backtest ทุก strategy × combo"}
+                </Button>
+              </div>
+            </CardHeader>
+            <CardContent className="pt-3">
+              {!multiBtResults && !multiBtRunning && (
+                <p className="text-xs text-muted-foreground text-center py-6">
+                  กดปุ่ม &quot;รัน Backtest ทุก strategy × combo&quot; เพื่อเริ่มทดสอบ
+                </p>
+              )}
+              {multiBtRunning && (
+                <div className="space-y-2 py-4">
+                  {Array.from({ length: 5 }).map((_, i) => <Skeleton key={i} className="h-8 w-full" />)}
+                </div>
+              )}
+              {multiBtResults && multiBtResults.length === 0 && (
+                <p className="text-xs text-muted-foreground text-center py-6">
+                  ไม่มีผลลัพธ์ (combo ทั้งหมดมีแท่งเทียนน้อยกว่า 50)
+                </p>
+              )}
+              {multiBtResults && multiBtResults.length > 0 && (
+                <div className="space-y-2">
+                  <div className="rounded-md border">
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead className="w-8 text-center">#</TableHead>
+                          <TableHead>กลยุทธ์</TableHead>
+                          <TableHead>คู่เหรียญ · ช่วง</TableHead>
+                          <TableHead className="text-right">P&L</TableHead>
+                          <TableHead className="text-right">Win</TableHead>
+                          <TableHead className="text-right">เทรด</TableHead>
+                          <TableHead className="text-right">DD</TableHead>
+                          <TableHead className="text-right">PF</TableHead>
+                          <TableHead className="text-right">Sharpe</TableHead>
+                          <TableHead className="text-right">vs ซื้อถือ</TableHead>
+                          <TableHead className="w-8"></TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {multiBtResults.map((row, idx) => {
+                          const r = row.result;
+                          const rowKey = `${row.strategyId}::${row.comboKey}`;
+                          const isExpanded = multiBtExpanded.has(rowKey);
+                          const diff = r.totalPnlPct - r.buyAndHoldPct;
+                          return (
+                            <React.Fragment key={rowKey}>
+                              <TableRow
+                                className="cursor-pointer hover:bg-muted/50"
+                                onClick={() =>
+                                  setMultiBtExpanded(prev => {
+                                    const next = new Set(prev);
+                                    if (next.has(rowKey)) next.delete(rowKey);
+                                    else next.add(rowKey);
+                                    return next;
+                                  })
+                                }
+                              >
+                                <TableCell className="text-center text-muted-foreground text-xs">{idx + 1}</TableCell>
+                                <TableCell className="font-medium text-xs">{row.strategyName}</TableCell>
+                                <TableCell className="text-xs">
+                                  <span className="font-mono font-semibold">{row.symbol}</span>
+                                  <span className="text-muted-foreground"> · </span>
+                                  <span className="font-mono text-muted-foreground">{row.interval}</span>
+                                </TableCell>
+                                <TableCell className={`text-right tabular-nums font-semibold ${pnlColor(r.totalPnlPct)}`}>
+                                  {r.totalPnlPct >= 0 ? "+" : ""}{r.totalPnlPct.toFixed(2)}%
+                                </TableCell>
+                                <TableCell className={`text-right tabular-nums text-xs ${r.winRate >= 50 ? "text-emerald-500" : "text-red-500"}`}>
+                                  {r.winRate.toFixed(1)}%
+                                </TableCell>
+                                <TableCell className="text-right tabular-nums text-xs">
+                                  {r.totalTrades}
+                                </TableCell>
+                                <TableCell className="text-right tabular-nums text-xs text-red-500">
+                                  -{r.maxDrawdownPct.toFixed(2)}%
+                                </TableCell>
+                                <TableCell className={`text-right tabular-nums text-xs ${r.profitFactor > 1 ? "text-emerald-500" : "text-red-500"}`}>
+                                  {r.profitFactor === Infinity ? "INF" : r.profitFactor.toFixed(2)}
+                                </TableCell>
+                                <TableCell className={`text-right tabular-nums text-xs ${r.sharpeRatio > 0 ? "text-emerald-500" : "text-red-500"}`}>
+                                  {r.sharpeRatio.toFixed(2)}
+                                </TableCell>
+                                <TableCell className={`text-right tabular-nums text-xs font-medium ${diff >= 0 ? "text-emerald-500" : "text-red-500"}`}>
+                                  {diff >= 0 ? "+" : ""}{diff.toFixed(2)}%
+                                </TableCell>
+                                <TableCell className="text-center text-muted-foreground text-xs">
+                                  {isExpanded ? "▲" : "▼"}
+                                </TableCell>
+                              </TableRow>
+                              {isExpanded && (
+                                <TableRow>
+                                  <TableCell colSpan={11} className="p-0">
+                                    <div className="border-t bg-muted/20 px-4 py-3 space-y-2">
+                                      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                                        <StatCard label="กำไรเฉลี่ย" value={`+${r.avgWinPct.toFixed(2)}%`} color="text-emerald-500" size="sm" />
+                                        <StatCard label="ขาดทุนเฉลี่ย" value={`${r.avgLossPct.toFixed(2)}%`} color="text-red-500" size="sm" />
+                                        <StatCard label="ดีที่สุด" value={`+${r.bestTradePct.toFixed(2)}%`} color="text-emerald-500" size="sm" />
+                                        <StatCard label="แย่ที่สุด" value={`${r.worstTradePct.toFixed(2)}%`} color="text-red-500" size="sm" />
+                                      </div>
+                                      <div className="flex flex-wrap gap-1">
+                                        {r.trades.map((t, i) => (
+                                          <span
+                                            key={i}
+                                            className={`inline-flex items-center rounded px-1.5 py-0.5 text-[9px] font-medium tabular-nums ${t.pnlPct >= 0 ? "bg-emerald-500/10 text-emerald-500" : "bg-red-500/10 text-red-500"}`}
+                                          >
+                                            #{i + 1} {t.pnlPct >= 0 ? "+" : ""}{t.pnlPct.toFixed(2)}%
+                                          </span>
+                                        ))}
+                                      </div>
+                                      <Button
+                                        size="sm"
+                                        variant="outline"
+                                        className="h-7 text-[10px]"
+                                        onClick={(e) => { e.stopPropagation(); selectCombo(row.comboKey); }}
+                                      >
+                                        ดูกราฟ {row.symbol}·{row.interval}
+                                      </Button>
+                                    </div>
+                                  </TableCell>
+                                </TableRow>
+                              )}
+                            </React.Fragment>
+                          );
+                        })}
+                      </TableBody>
+                    </Table>
+                  </div>
+                  {multiBtResults.length >= 2 && (
+                    <div className="flex gap-3">
+                      <Card size="sm" className="flex-1 ring-emerald-500/20">
+                        <CardContent className="py-2.5">
+                          <p className="text-[10px] text-muted-foreground">ดีที่สุด</p>
+                          <p className="text-sm font-semibold text-emerald-500">
+                            {multiBtResults[0].strategyName} · {multiBtResults[0].symbol}·{multiBtResults[0].interval}
+                          </p>
+                          <p className="text-xs tabular-nums text-emerald-500">
+                            +{multiBtResults[0].result.totalPnlPct.toFixed(2)}%
+                          </p>
+                        </CardContent>
+                      </Card>
+                      <Card size="sm" className="flex-1 ring-red-500/20">
+                        <CardContent className="py-2.5">
+                          <p className="text-[10px] text-muted-foreground">แย่ที่สุด</p>
+                          <p className="text-sm font-semibold text-red-500">
+                            {multiBtResults[multiBtResults.length - 1].strategyName} ·{" "}
+                            {multiBtResults[multiBtResults.length - 1].symbol}·{multiBtResults[multiBtResults.length - 1].interval}
+                          </p>
+                          <p className="text-xs tabular-nums text-red-500">
+                            {multiBtResults[multiBtResults.length - 1].result.totalPnlPct.toFixed(2)}%
+                          </p>
+                        </CardContent>
+                      </Card>
+                    </div>
+                  )}
+                </div>
+              )}
+            </CardContent>
+          </Card>
         )}
 
         {/* ═══ BACKTEST All Indicator and Strategy ═══ */}
@@ -1997,6 +2573,17 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
     <div className="space-y-1">
       <label className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">{label}</label>
       {children}
+    </div>
+  );
+}
+
+function StepLabel({ num, text }: { num: number; text: string }) {
+  return (
+    <div className="flex items-center gap-2 mb-2">
+      <span className="flex h-5 w-5 items-center justify-center rounded-full bg-primary text-primary-foreground text-[10px] font-semibold tabular-nums">
+        {num}
+      </span>
+      <span className="text-xs font-medium">{text}</span>
     </div>
   );
 }
