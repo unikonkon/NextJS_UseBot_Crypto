@@ -482,6 +482,8 @@ export default function KlinesPage() {
   const [allBtResults, setAllBtResults] = useState<{ strategyId: StrategyId; name: string; result: BacktestResult }[] | null>(null);
   const [allBtRunning, setAllBtRunning] = useState(false);
   const [allBtExpanded, setAllBtExpanded] = useState<Set<StrategyId>>(new Set());
+  // กลยุทธ์ที่เลือกแสดงสัญญาณ ซื้อ/ขาย บนกราฟ (จากตาราง "ทุก Indicator") — เลือกได้ทีละ 1
+  const [graphSignalStrategy, setGraphSignalStrategy] = useState<StrategyId | null>(null);
 
   // dataShowUI state
   const [csvFiles, setCsvFiles] = useState<string[]>([]);
@@ -969,7 +971,7 @@ export default function KlinesPage() {
   // ─── Fetch Historical ──────────────────────────────────────
   const fetchHistorical = useCallback(async () => {
     if (!startTime) { setError("กรุณาระบุเวลาเริ่มต้น"); return; }
-    setLoading(true); setError(null); setKlines([]); setIndicators(null); setBtResult(null); setAllBtResults(null);
+    setLoading(true); setError(null); setKlines([]); setIndicators(null); setBtResult(null); setAllBtResults(null); setGraphSignalStrategy(null);
     setBacktestProgress({ current: 0 });
     const controller = new AbortController();
     abortRef.current = controller;
@@ -1542,14 +1544,21 @@ export default function KlinesPage() {
         {error && <ErrorCard message={error} />}
 
         {/* Price Chart (lightweight-charts) */}
-        {klines.length > 0 && (
-          <KlineGraph
-            klines={klines}
-            indicators={indicators}
-            btResult={btResult}
-            strategyId={strategyId}
-          />
-        )}
+        {klines.length > 0 && (() => {
+          const sigItem = graphSignalStrategy
+            ? allBtResults?.find(r => r.strategyId === graphSignalStrategy) ?? null
+            : null;
+          return (
+            <KlineGraph
+              klines={klines}
+              indicators={indicators}
+              btResult={btResult}
+              strategyId={strategyId}
+              signalResult={sigItem?.result ?? null}
+              signalName={sigItem?.name ?? null}
+            />
+          );
+        })()}
 
         {/* ═══ Multi-Backtest: ทุก strategy × ทุก combo ═══ */}
         {(loadedCombos.size > 0 || csvFiles.length > 0) && (
@@ -1803,6 +1812,7 @@ export default function KlinesPage() {
                         <TableRow>
                           <TableHead className="w-8 text-center">#</TableHead>
                           <TableHead>กลยุทธ์</TableHead>
+                          <TableHead className="text-right">ซื้อ/ขายในกราฟ</TableHead>
                           <TableHead className="text-right">กำไร/ขาดทุน</TableHead>
                           <TableHead className="text-right">อัตราชนะ</TableHead>
                           <TableHead className="text-right">จำนวนเทรด</TableHead>
@@ -1831,6 +1841,16 @@ export default function KlinesPage() {
                               >
                                 <TableCell className="text-center text-muted-foreground text-xs">{idx + 1}</TableCell>
                                 <TableCell className="font-medium text-xs">{item.name}</TableCell>
+                                <TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
+                                  <Button
+                                    size="sm"
+                                    variant={graphSignalStrategy === item.strategyId ? "default" : "outline"}
+                                    className="h-6 px-2 text-[10px]"
+                                    onClick={() => setGraphSignalStrategy(prev => prev === item.strategyId ? null : item.strategyId)}
+                                  >
+                                    {graphSignalStrategy === item.strategyId ? "● แสดงอยู่" : "แสดงในกราฟ"}
+                                  </Button>
+                                </TableCell>
                                 <TableCell className={`text-right tabular-nums font-semibold ${pnlColor(r.totalPnlPct)}`}>
                                   {r.totalPnlPct >= 0 ? "+" : ""}{r.totalPnlPct.toFixed(2)}%
                                 </TableCell>
@@ -1858,7 +1878,7 @@ export default function KlinesPage() {
                               </TableRow>
                               {isExpanded && (
                                 <TableRow>
-                                  <TableCell colSpan={10} className="p-0">
+                                  <TableCell colSpan={11} className="p-0">
                                     <div className="border-t bg-muted/20 px-4 py-3 space-y-3">
                                       {/* Strategy description */}
                                       {(() => {

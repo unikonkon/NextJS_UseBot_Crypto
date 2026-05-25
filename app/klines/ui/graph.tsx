@@ -22,6 +22,11 @@ export interface KlineGraphProps {
   indicators: AllIndicators | null;
   btResult: BacktestResult | null;
   strategyId: StrategyId;
+  /** Optional buy/sell signal overlay chosen from the all-indicators table.
+   *  When set, its trade markers are drawn on the chart (takes precedence
+   *  over btResult) and the per-strategy indicator markers are suppressed. */
+  signalResult?: BacktestResult | null;
+  signalName?: string | null;
 }
 
 // ─── Helpers ────────────────────────────────────────────────────
@@ -67,10 +72,13 @@ function OverlayToggle({ label, color, secondColor, active, onToggle }: {
 }
 
 // ─── Component ──────────────────────────────────────────────────
-export default function KlineGraph({ klines, indicators: rawIndicators, btResult, strategyId }: KlineGraphProps) {
+export default function KlineGraph({ klines, indicators: rawIndicators, btResult, strategyId, signalResult = null, signalName = null }: KlineGraphProps) {
   // กัน runtime crash: ใช้ indicators เฉพาะเมื่อความยาวตรงกับ klines
   // (ตอนสลับ combo, klines เปลี่ยนก่อน indicators จะคำนวณใหม่เสร็จ → ความยาวไม่ตรงชั่วคราว)
   const indicators = (rawIndicators && rawIndicators.rsi.length === klines.length) ? rawIndicators : null;
+
+  // สัญญาณที่แสดงบนกราฟ: ถ้าเลือกกลยุทธ์จากตาราง "ทุก Indicator" จะ override ผล backtest เดี่ยว
+  const effectiveResult = signalResult ?? btResult;
 
   const mainRef = useRef<HTMLDivElement>(null);
   const rsiRef = useRef<HTMLDivElement>(null);
@@ -440,7 +448,7 @@ export default function KlineGraph({ klines, indicators: rawIndicators, btResult
             text: s.type,
           });
         }
-        if (smcMarkers.length > 0 && !btResult) {
+        if (smcMarkers.length > 0 && !effectiveResult) {
           // Deduplicate by time (keep last)
           const seen = new Map<number, SeriesMarker<UTCTimestamp>>();
           for (const m of smcMarkers) seen.set(m.time as number, m);
@@ -679,7 +687,7 @@ export default function KlineGraph({ klines, indicators: rawIndicators, btResult
             text: "MSB",
           });
         }
-        if (msbMarkers.length > 0 && !btResult) {
+        if (msbMarkers.length > 0 && !effectiveResult) {
           msbMarkers.sort((a, b) => (a.time as number) - (b.time as number));
           createSeriesMarkers(candleSeries, msbMarkers);
         }
@@ -1081,7 +1089,7 @@ export default function KlineGraph({ klines, indicators: rawIndicators, btResult
             }).setData(lineData);
           }
           // HH/LH/HL/LL markers
-          if (!btResult) {
+          if (!effectiveResult) {
             const zzMarkers: SeriesMarker<UTCTimestamp>[] = [];
             for (const sp of dedup) {
               zzMarkers.push({
@@ -1126,7 +1134,7 @@ export default function KlineGraph({ klines, indicators: rawIndicators, btResult
           }).setData([{ time: t1, value: s.level }, { time: t2, value: s.level }]);
         }
         // Structure markers
-        if (!btResult) {
+        if (!effectiveResult) {
           const pmMarkers: SeriesMarker<UTCTimestamp>[] = [];
           for (const s of pasm.structures) {
             if (s.index < 0 || s.index >= klines.length) continue;
@@ -1170,7 +1178,7 @@ export default function KlineGraph({ klines, indicators: rawIndicators, btResult
       }
 
       // Candlestick Patterns overlay (markers only)
-      if (showCandlestickP && !btResult) {
+      if (showCandlestickP && !effectiveResult) {
         const cp = indicators.candlestickPatterns;
         const cpMarkers: SeriesMarker<UTCTimestamp>[] = [];
         for (const hit of cp.hits.slice(-50)) {
@@ -1217,7 +1225,7 @@ export default function KlineGraph({ klines, indicators: rawIndicators, btResult
             }).setData(lineData);
           }
         }
-        if (!btResult) {
+        if (!effectiveResult) {
           const pivMarkers: SeriesMarker<UTCTimestamp>[] = [];
           for (const p of pphl.pivots.slice(-50)) {
             if (p.index < 0 || p.index >= klines.length) continue;
@@ -1253,7 +1261,7 @@ export default function KlineGraph({ klines, indicators: rawIndicators, btResult
         chart.addSeries(LineSeries, { color: "#eab308", lineWidth: 2, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }).setData(s100);
         chart.addSeries(LineSeries, { color: "#ff0500", lineWidth: 2, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }).setData(s200);
 
-        if (!btResult) {
+        if (!effectiveResult) {
           const tmaMarkers: SeriesMarker<UTCTimestamp>[] = [];
           for (const i of tma.threeLineStrikeBull.slice(-20)) {
             if (i < 0 || i >= klines.length) continue;
@@ -1302,7 +1310,7 @@ export default function KlineGraph({ klines, indicators: rawIndicators, btResult
           }).setData([{ time: t1Lower, value: p.lowerLine.y1 }, { time: t2Lower, value: p.lowerLine.y2 }]);
         }
 
-        if (!btResult) {
+        if (!effectiveResult) {
           const acpMarkers: SeriesMarker<UTCTimestamp>[] = [];
           for (const p of acp.patterns.slice(-15)) {
             if (p.endIndex < 0 || p.endIndex >= klines.length) continue;
@@ -1352,7 +1360,7 @@ export default function KlineGraph({ klines, indicators: rawIndicators, btResult
           }).setData([{ time: startTime, value: line.level }, { time: endTime, value: line.level }]);
         }
         // Spike + volatility markers
-        if (!btResult) {
+        if (!effectiveResult) {
           const pasrMarkers: SeriesMarker<UTCTimestamp>[] = [];
           for (const i of pasr.volumeSpikes) {
             if (i < 0 || i >= klines.length) continue;
@@ -1385,7 +1393,7 @@ export default function KlineGraph({ klines, indicators: rawIndicators, btResult
 
 
       // RSI Divergence markers (oscillator divergence on main chart)
-      if (showRsiDiv && !btResult) {
+      if (showRsiDiv && !effectiveResult) {
         const rd = indicators.rsiDivergence;
         const rdMarkers: SeriesMarker<UTCTimestamp>[] = [];
         for (let i = 0; i < klines.length; i++) {
@@ -1440,7 +1448,7 @@ export default function KlineGraph({ klines, indicators: rawIndicators, btResult
           crosshairMarkerVisible: false,
         }).setData(basisData as any);
 
-        if (!btResult) {
+        if (!effectiveResult) {
           const tssMarkers: SeriesMarker<UTCTimestamp>[] = [];
           for (let i = 0; i < klines.length; i++) {
             if (tss.signal[i] === "BUY") {
@@ -1463,11 +1471,11 @@ export default function KlineGraph({ klines, indicators: rawIndicators, btResult
       }
     }
 
-    // ─── Backtest markers on main chart ──────────────────────
-    if (btResult) {
+    // ─── Backtest / signal-overlay markers on main chart ─────
+    if (effectiveResult) {
       const markers: SeriesMarker<UTCTimestamp>[] = [];
 
-      for (const trade of btResult.trades) {
+      for (const trade of effectiveResult.trades) {
         const entryK = klines[trade.entryIdx];
         const exitK = klines[trade.exitIdx];
         if (entryK) {
@@ -1813,7 +1821,7 @@ export default function KlineGraph({ klines, indicators: rawIndicators, btResult
       sqzChartRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [klines, indicators, btResult, strategyId, isDark, showVwap, showCdcEma, showSupertrendLine, showSmcOb, showSR, showTrendlines, showUtBot, showMsbOb, showChandelier, showTonyEma, showSuperTrendStrat, showTurtle, showScalpPB, showTrendlineBO, showSmcBO, showSRHV, showCdcV2, showZigzagPP, showPriceActionSMC, showPriceActionSR, showCandlestickP, showPivotHL, showTma, showAcp, showRsiDiv, showTrendStrength, showRsi, showMacd, showSqz]);
+  }, [klines, indicators, btResult, signalResult, strategyId, isDark, showVwap, showCdcEma, showSupertrendLine, showSmcOb, showSR, showTrendlines, showUtBot, showMsbOb, showChandelier, showTonyEma, showSuperTrendStrat, showTurtle, showScalpPB, showTrendlineBO, showSmcBO, showSRHV, showCdcV2, showZigzagPP, showPriceActionSMC, showPriceActionSR, showCandlestickP, showPivotHL, showTma, showAcp, showRsiDiv, showTrendStrength, showRsi, showMacd, showSqz]);
 
   if (klines.length === 0) return null;
 
@@ -1825,8 +1833,13 @@ export default function KlineGraph({ klines, indicators: rawIndicators, btResult
           <span className="font-medium text-foreground text-xs">
             {klines.length.toLocaleString()} แท่งเทียน
           </span>
-          {btResult && (
+          {effectiveResult && (
             <>
+              {signalResult && signalName && (
+                <span className="rounded bg-primary/15 px-1.5 py-0.5 font-medium text-primary">
+                  สัญญาณ: {signalName}
+                </span>
+              )}
               <span className="flex items-center gap-1">
                 <span className="inline-block w-2 h-2 rounded-full bg-emerald-500" />
                 BUY
@@ -1836,15 +1849,15 @@ export default function KlineGraph({ klines, indicators: rawIndicators, btResult
                 SELL
               </span>
               <span>
-                เทรด: {btResult.totalTrades} |{" "}
-                <span className={btResult.totalPnlPct >= 0 ? "text-emerald-500" : "text-red-500"}>
-                  {btResult.totalPnlPct >= 0 ? "+" : ""}
-                  {btResult.totalPnlPct.toFixed(2)}%
+                เทรด: {effectiveResult.totalTrades} |{" "}
+                <span className={effectiveResult.totalPnlPct >= 0 ? "text-emerald-500" : "text-red-500"}>
+                  {effectiveResult.totalPnlPct >= 0 ? "+" : ""}
+                  {effectiveResult.totalPnlPct.toFixed(2)}%
                 </span>
               </span>
             </>
           )}
-          {indicators && !btResult && (
+          {indicators && !effectiveResult && (
             <span className="text-muted-foreground/60">กดรัน Backtest เพื่อแสดงสัญญาณซื้อ/ขาย</span>
           )}
         </div>
