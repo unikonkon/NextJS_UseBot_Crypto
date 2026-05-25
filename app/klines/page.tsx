@@ -389,6 +389,34 @@ function downloadCsv(filename: string, csv: string) {
   URL.revokeObjectURL(url);
 }
 
+// parse CSV text (รูปแบบ klinesToCsv) → KlineData[]
+function parseCsvToKlines(text: string): KlineData[] {
+  const lines = text.trim().split("\n");
+  return lines.slice(1).map(line => {
+    const cols = line.split(",");
+    return {
+      openTime: new Date(cols[0]).getTime(),
+      open: cols[1], high: cols[2], low: cols[3], close: cols[4], volume: cols[5],
+      closeTime: new Date(cols[6]).getTime(),
+      quoteAssetVolume: cols[7],
+      numberOfTrades: parseInt(cols[8], 10),
+      takerBuyBaseVolume: cols[9],
+      takerBuyQuoteVolume: cols[10],
+    };
+  });
+}
+
+// แยก symbol/interval จากชื่อไฟล์ เช่น "BTCUSDT_1h_1000_realtime.csv"
+function parseComboFromFilename(filename: string): { symbol: string; interval: Interval } | null {
+  const base = filename.replace(/\.csv$/i, "");
+  const parts = base.split("_");
+  if (parts.length < 2) return null;
+  const symbol = parts[0].toUpperCase();
+  const interval = parts[1];
+  if (!ALL_INTERVALS.includes(interval as Interval)) return null;
+  return { symbol, interval: interval as Interval };
+}
+
 // ─── Mini sparkline (close prices) ────────────────────────────
 function Sparkline({ klines }: { klines: KlineData[] }) {
   if (klines.length < 2) return <div className="h-8 w-full bg-muted/30" />;
@@ -502,25 +530,7 @@ export default function KlinesPage() {
       const res = await fetch(`/api/dataShowUI?file=${encodeURIComponent(filename)}`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const text = await res.text();
-      const lines = text.trim().split("\n");
-      // skip header
-      const data: KlineData[] = lines.slice(1).map(line => {
-        const cols = line.split(",");
-        return {
-          openTime: new Date(cols[0]).getTime(),
-          open: cols[1],
-          high: cols[2],
-          low: cols[3],
-          close: cols[4],
-          volume: cols[5],
-          closeTime: new Date(cols[6]).getTime(),
-          quoteAssetVolume: cols[7],
-          numberOfTrades: parseInt(cols[8], 10),
-          takerBuyBaseVolume: cols[9],
-          takerBuyQuoteVolume: cols[10],
-        };
-      });
-      setKlines(data);
+      setKlines(parseCsvToKlines(text));
       setLastFetch(new Date());
     } catch (err) { setError(String(err)); }
     finally { setCsvLoading(false); }
@@ -767,6 +777,48 @@ export default function KlinesPage() {
       if (i < combos.length - 1) await sleep(300); // กัน browser block หลายไฟล์
     }
   }, [loadedCombos]);
+
+  // นำเข้าไฟล์ CSV ที่บันทึกไว้ทั้งหมด → เพิ่มเป็น combos (สำหรับ Multi-Backtest)
+  const importAllSavedFiles = useCallback(async () => {
+    if (csvFiles.length === 0) return;
+    setCsvLoading(true);
+    setError(null);
+    try {
+      let imported = 0;
+      let skipped = 0;
+      for (const file of csvFiles) {
+        const meta = parseComboFromFilename(file);
+        if (!meta) { skipped++; continue; }
+        const res = await fetch(`/api/dataShowUI?file=${encodeURIComponent(file)}`);
+        if (!res.ok) { skipped++; continue; }
+        const text = await res.text();
+        const klinesData = parseCsvToKlines(text);
+        if (klinesData.length === 0) { skipped++; continue; }
+        // key = ชื่อไฟล์ เพื่อกันชนกับ combos จาก batch และกันไฟล์ซ้ำ
+        const key = `file:${file}`;
+        const combo: LoadedCombo = {
+          key,
+          symbol: meta.symbol,
+          interval: meta.interval,
+          limit: klinesData.length,
+          mode: "historical",
+          klines: klinesData,
+          loadedAt: new Date(),
+          weight: 0,
+        };
+        setLoadedCombos(prev => new Map(prev).set(key, combo));
+        setActiveComboKey(prev => prev ?? key);
+        imported++;
+      }
+      if (imported === 0) {
+        setError(`นำเข้าไม่สำเร็จ (ข้าม ${skipped} ไฟล์ที่อ่าน symbol/interval ไม่ได้)`);
+      }
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setCsvLoading(false);
+    }
+  }, [csvFiles]);
 
   // ─── Multi-Backtest: ทุก strategies × ทุก combos ────────────
   const runMultiBacktest = useCallback(() => {
@@ -1228,9 +1280,9 @@ export default function KlinesPage() {
                   >
                     + เพิ่มเข้า Batch ({activeSymbol} × {batchIntervals.size > 0 ? `${batchIntervals.size} ช่วง` : interval})
                   </Button>
-                  <Button onClick={downloadRealtime} disabled={loading} variant="ghost" size="sm" className="h-9 text-[11px]">
+                  {/* <Button onClick={downloadRealtime} disabled={loading} variant="ghost" size="sm" className="h-9 text-[11px]">
                     ⬇ ดาวน์โหลด CSV
-                  </Button>
+                  </Button> */}
                   {loading && (
                     <Button variant="destructive" size="sm" onClick={() => abortRef.current?.abort()}>ยกเลิก</Button>
                   )}
@@ -1466,7 +1518,7 @@ export default function KlinesPage() {
         )}
 
         {/* ═══ Multi-Backtest: ทุก strategy × ทุก combo ═══ */}
-        {loadedCombos.size > 0 && (
+        {(loadedCombos.size > 0 || csvFiles.length > 0) && (
           <Card size="sm">
             <CardHeader className="border-b">
               <div className="flex items-center justify-between gap-2 flex-wrap">
@@ -1478,15 +1530,29 @@ export default function KlinesPage() {
                     รัน {STRATEGIES.length} strategies × {loadedCombos.size} combos = {STRATEGIES.length * loadedCombos.size} ผลลัพธ์ — เรียงตามกำไรสูงสุด
                   </CardDescription>
                 </div>
-                <Button onClick={runMultiBacktest} disabled={multiBtRunning} className="h-9 shrink-0">
-                  {multiBtRunning ? "กำลังรัน..." : "รัน Backtest ทุก strategy × combo"}
-                </Button>
+                <div className="flex items-center gap-2 shrink-0">
+                  {csvFiles.length > 0 && (
+                    <Button
+                      onClick={importAllSavedFiles}
+                      disabled={csvLoading || multiBtRunning}
+                      variant="outline"
+                      className="h-9 border-sky-500/30 bg-sky-500/10 text-sky-500 hover:bg-sky-500/20"
+                    >
+                      {csvLoading ? "กำลังนำเข้า..." : `⬆ นำเข้าไฟล์บันทึกทั้งหมด (${csvFiles.length})`}
+                    </Button>
+                  )}
+                  <Button onClick={runMultiBacktest} disabled={multiBtRunning || loadedCombos.size === 0} className="h-9">
+                    {multiBtRunning ? "กำลังรัน..." : "รัน Backtest ทุก strategy × combo"}
+                  </Button>
+                </div>
               </div>
             </CardHeader>
             <CardContent className="pt-3">
               {!multiBtResults && !multiBtRunning && (
                 <p className="text-xs text-muted-foreground text-center py-6">
-                  กดปุ่ม &quot;รัน Backtest ทุก strategy × combo&quot; เพื่อเริ่มทดสอบ
+                  {loadedCombos.size === 0
+                    ? `มีไฟล์บันทึกไว้ ${csvFiles.length} ไฟล์ — กด "นำเข้าไฟล์บันทึกทั้งหมด" ก่อน แล้วจึงรัน Backtest`
+                    : "กดปุ่ม “รัน Backtest ทุก strategy × combo” เพื่อเริ่มทดสอบ"}
                 </p>
               )}
               {multiBtRunning && (
