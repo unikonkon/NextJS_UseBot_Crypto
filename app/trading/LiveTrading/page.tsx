@@ -425,6 +425,8 @@ function LiveTradingContent() {
         tma_overlay: ind.tmaOverlay.signal,
         auto_chart_patterns: ind.autoChartPatterns.signal,
         diy_strategy_builder: ind.diyStrategyBuilder.signal,
+        rsi_divergence: ind.rsiDivergence.signal,
+        trend_strength: ind.trendStrength.signal,
       };
 
       const signals = strategyMap[strategyId];

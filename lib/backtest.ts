@@ -64,7 +64,9 @@ export type StrategyId =
   | "pivot_points_hl"
   | "tma_overlay"
   | "auto_chart_patterns"
-  | "diy_strategy_builder";
+  | "diy_strategy_builder"
+  | "rsi_divergence"
+  | "trend_strength";
 
 export interface StrategyConfig {
   id: StrategyId;
@@ -75,6 +77,27 @@ export interface StrategyConfig {
 }
 
 export const STRATEGIES: StrategyConfig[] = [
+  {
+    id: "smc",
+    name: "Smart Money Concepts (SMC)",
+    descriptionEn: "Buy on Bullish CHoCH/BOS (discount zone), Sell on Bearish CHoCH/BOS (premium zone)",
+    descriptionTh: "ซื้อ เมื่อ CHoCH/BOS ขาขึ้น (โซนส่วนลด), ขาย เมื่อ CHoCH/BOS ขาลง (โซนพรีเมียม)",
+    params: { swingSize: 50, internalSize: 5 },
+  },
+  {
+    id: "pivot_points_hl",
+    name: "Pivot Points HL (LuxAlgo)",
+    descriptionEn: "Regular + missed pivots — Buy on pivot low confirm (expect bounce), Sell on pivot high confirm",
+    descriptionTh: "Pivot ปกติ + missed pivot — ซื้อ เมื่อยืนยัน pivot low (คาดเด้ง), ขาย เมื่อยืนยัน pivot high",
+    params: { pphlLength: 50 },
+  },
+  {
+    id: "price_action_sr",
+    name: "Price Action S&R (DGT)",
+    descriptionEn: "3-bar consecutive sequences as S/R + volume/volatility spikes. Buy on resistance break, Sell on support break",
+    descriptionTh: "ลำดับ 3 แท่งติด = S/R + Volume/Volatility spike. ซื้อ เมื่อทะลุแนวต้าน, ขาย เมื่อหลุดแนวรับ",
+    params: { pasrVolMaLength: 89, pasrVolSpikeThresh: 4.669, pasrAtrLength: 11, pasrAtrMult: 2.718 },
+  },
   {
     id: "rsi",
     name: "RSI Overbought/Oversold",
@@ -88,13 +111,6 @@ export const STRATEGIES: StrategyConfig[] = [
     descriptionEn: "EMA crossover zones — Buy on first Green bar, Sell on first Red bar",
     descriptionTh: "โซน EMA ตัดกัน — ซื้อ เมื่อแท่งเขียวแรก, ขาย เมื่อแท่งแดงแรก",
     params: { fastPeriod: 12, slowPeriod: 26 },
-  },
-  {
-    id: "smc",
-    name: "Smart Money Concepts (SMC)",
-    descriptionEn: "Buy on Bullish CHoCH/BOS (discount zone), Sell on Bearish CHoCH/BOS (premium zone)",
-    descriptionTh: "ซื้อ เมื่อ CHoCH/BOS ขาขึ้น (โซนส่วนลด), ขาย เมื่อ CHoCH/BOS ขาลง (โซนพรีเมียม)",
-    params: { swingSize: 50, internalSize: 5 },
   },
   {
     id: "squeeze_momentum",
@@ -222,13 +238,7 @@ export const STRATEGIES: StrategyConfig[] = [
     descriptionTh: "BOS/CHoCH + Order Blocks + Sweep — ซื้อ เมื่อ CHoCH ขาขึ้น, ขาย เมื่อ CHoCH ขาลง",
     params: { pasmcLen: 5, pasmcObLength: 5, pasmcBuildSweep: 1 },
   },
-  {
-    id: "price_action_sr",
-    name: "Price Action S&R (DGT)",
-    descriptionEn: "3-bar consecutive sequences as S/R + volume/volatility spikes. Buy on resistance break, Sell on support break",
-    descriptionTh: "ลำดับ 3 แท่งติด = S/R + Volume/Volatility spike. ซื้อ เมื่อทะลุแนวต้าน, ขาย เมื่อหลุดแนวรับ",
-    params: { pasrVolMaLength: 89, pasrVolSpikeThresh: 4.669, pasrAtrLength: 11, pasrAtrMult: 2.718 },
-  },
+
   {
     id: "candlestick_patterns",
     name: "Candlestick Patterns Identified",
@@ -236,13 +246,7 @@ export const STRATEGIES: StrategyConfig[] = [
     descriptionTh: "แพทเทิร์น Candlestick คลาสสิก — ซื้อ เมื่อแพทเทิร์น bullish, ขาย เมื่อแพทเทิร์น bearish",
     params: { cpTrendBars: 5, cpDojiSize: 0.05 },
   },
-  {
-    id: "pivot_points_hl",
-    name: "Pivot Points HL (LuxAlgo)",
-    descriptionEn: "Regular + missed pivots — Buy on pivot low confirm (expect bounce), Sell on pivot high confirm",
-    descriptionTh: "Pivot ปกติ + missed pivot — ซื้อ เมื่อยืนยัน pivot low (คาดเด้ง), ขาย เมื่อยืนยัน pivot high",
-    params: { pphlLength: 50 },
-  },
+
   {
     id: "tma_overlay",
     name: "TMA Overlay",
@@ -263,6 +267,20 @@ export const STRATEGIES: StrategyConfig[] = [
     descriptionEn: "Compose leading + filters — Buy when leading signal passes all enabled filters, Sell symmetric",
     descriptionTh: "ผสม leading + ตัวกรอง — ซื้อ เมื่อ leading signal ผ่านทุกตัวกรองที่เปิด, ขาย แบบเดียวกัน",
     params: { diyLeading: 0, diySignalExpiry: 3, diyUseEma200: 1, diyUseRsi50: 1 },
+  },
+  {
+    id: "rsi_divergence",
+    name: "RSI Divergence Indicator",
+    descriptionEn: "RSI pivot divergence (long-only) — Buy on Bullish Divergence, Sell on RSI take-profit cross or Bearish Divergence",
+    descriptionTh: "Divergence ของ RSI (ฝั่ง Long) — ซื้อ เมื่อเกิด Bullish Divergence, ขาย เมื่อ RSI ตัดขึ้นเหนือ TP Level หรือเกิด Bearish Divergence",
+    params: { rsiDivPeriod: 9, rsiDivLbL: 1, rsiDivLbR: 3, rsiDivTakeProfit: 80 },
+  },
+  {
+    id: "trend_strength",
+    name: "Trend Strength Signals [AlgoAlpha]",
+    descriptionEn: "SMA ± Std Dev envelope — Buy when price breaks above the upper band (trend flips up), Sell when it breaks below the lower band",
+    descriptionTh: "กรอบ SMA ± Std Dev — ซื้อ เมื่อราคาทะลุแถบบน (เทรนด์เปลี่ยนเป็นขาขึ้น), ขาย เมื่อราคาหลุดแถบล่าง",
+    params: { tssPeriod: 20, tssMult: 2.5 },
   },
 ];
 
@@ -489,6 +507,22 @@ function diyStrategyBuilderStrategy(_k: KlineData[], ind: AllIndicators): Signal
   });
 }
 
+function rsiDivergenceStrategy(_k: KlineData[], ind: AllIndicators): SignalAction[] {
+  return ind.rsiDivergence.signal.map((sig) => {
+    if (sig === "BUY") return "BUY";
+    if (sig === "SELL") return "SELL";
+    return "HOLD";
+  });
+}
+
+function trendStrengthStrategy(_k: KlineData[], ind: AllIndicators): SignalAction[] {
+  return ind.trendStrength.signal.map((sig) => {
+    if (sig === "BUY") return "BUY";
+    if (sig === "SELL") return "SELL";
+    return "HOLD";
+  });
+}
+
 const STRATEGY_FNS: Record<StrategyId, SignalFn> = {
   rsi: rsiStrategy,
   cdc_actionzone: cdcActionZoneStrategy,
@@ -517,6 +551,8 @@ const STRATEGY_FNS: Record<StrategyId, SignalFn> = {
   tma_overlay: tmaOverlayStrategy,
   auto_chart_patterns: autoChartPatternsStrategy,
   diy_strategy_builder: diyStrategyBuilderStrategy,
+  rsi_divergence: rsiDivergenceStrategy,
+  trend_strength: trendStrengthStrategy,
 };
 
 // ─── Backtest Engine ───────────────────────────────────────────
@@ -596,6 +632,12 @@ export function runBacktest(
     diyUseCdcZone: strategyId === "diy_strategy_builder" ? (params.diyUseCdcZone ?? 0) : undefined,
     diyUseTrendlines: strategyId === "diy_strategy_builder" ? (params.diyUseTrendlines ?? 0) : undefined,
     diyUseRsi50: strategyId === "diy_strategy_builder" ? (params.diyUseRsi50 ?? 1) : undefined,
+    rsiDivPeriod: strategyId === "rsi_divergence" ? (params.rsiDivPeriod ?? 9) : undefined,
+    rsiDivLbL: strategyId === "rsi_divergence" ? (params.rsiDivLbL ?? 1) : undefined,
+    rsiDivLbR: strategyId === "rsi_divergence" ? (params.rsiDivLbR ?? 3) : undefined,
+    rsiDivTakeProfit: strategyId === "rsi_divergence" ? (params.rsiDivTakeProfit ?? 80) : undefined,
+    tssPeriod: strategyId === "trend_strength" ? (params.tssPeriod ?? 20) : undefined,
+    tssMult: strategyId === "trend_strength" ? (params.tssMult ?? 2.5) : undefined,
   });
   const signals = STRATEGY_FNS[strategyId](klines, indicators, params);
 

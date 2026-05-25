@@ -3617,6 +3617,212 @@ export function diyStrategyBuilder(
 }
 
 // ─── Compute all indicators for klines ─────────────────────────
+// ─── RSI Divergence Indicator ──────────────────────────────────
+// RSI oscillator + pivot-based divergence detection (regular & hidden,
+// bullish & bearish). Long-only like the source strategy: BUY on bullish
+// divergence, SELL when RSI crosses above the take-profit level or a
+// bearish divergence forms. Pivots in the oscillator are confirmed `lbR`
+// bars after they actually occur (no lookahead).
+export interface RSIDivergenceResult {
+  osc: (number | null)[];          // RSI oscillator
+  regularBull: boolean[];          // regular bullish divergence (at confirm bar)
+  hiddenBull: boolean[];           // hidden bullish divergence
+  regularBear: boolean[];          // regular bearish divergence
+  hiddenBear: boolean[];           // hidden bearish divergence
+  pivotLow: boolean[];             // bar where an osc pivot low is confirmed
+  pivotHigh: boolean[];            // bar where an osc pivot high is confirmed
+  signal: ("BUY" | "SELL" | null)[];
+}
+
+export function rsiDivergence(
+  klines: KlineData[],
+  rsiPeriod = 9,
+  lbL = 1,
+  lbR = 3,
+  takeProfitRSILevel = 80,
+  rangeLower = 5,
+  rangeUpper = 60,
+  plotHiddenBull = true,
+  plotHiddenBear = false,
+): RSIDivergenceResult {
+  const c = closes(klines);
+  const h = highs(klines);
+  const l = lows(klines);
+  const len = klines.length;
+  const osc = rsi(c, rsiPeriod);
+
+  const regularBull = new Array<boolean>(len).fill(false);
+  const hiddenBull = new Array<boolean>(len).fill(false);
+  const regularBear = new Array<boolean>(len).fill(false);
+  const hiddenBear = new Array<boolean>(len).fill(false);
+  const pivotLow = new Array<boolean>(len).fill(false);
+  const pivotHigh = new Array<boolean>(len).fill(false);
+  const signal: ("BUY" | "SELL" | null)[] = new Array(len).fill(null);
+
+  // previous confirmed pivots: oscillator value + price extreme + confirm bar
+  let prevLowOsc: number | null = null;
+  let prevLowPrice = 0;
+  let prevLowIdx = -1;
+  let prevHighOsc: number | null = null;
+  let prevHighPrice = 0;
+  let prevHighIdx = -1;
+
+  // strict pivot in the osc series at bar p (lbL left, lbR right)
+  const isPivotLow = (p: number): boolean => {
+    const v = osc[p];
+    if (v === null) return false;
+    for (let j = 1; j <= lbL; j++) { const x = osc[p - j]; if (x === null || v >= x) return false; }
+    for (let j = 1; j <= lbR; j++) { const x = osc[p + j]; if (x === null || v >= x) return false; }
+    return true;
+  };
+  const isPivotHigh = (p: number): boolean => {
+    const v = osc[p];
+    if (v === null) return false;
+    for (let j = 1; j <= lbL; j++) { const x = osc[p - j]; if (x === null || v <= x) return false; }
+    for (let j = 1; j <= lbR; j++) { const x = osc[p + j]; if (x === null || v <= x) return false; }
+    return true;
+  };
+
+  for (let i = 0; i < len; i++) {
+    let bullCond = false, hiddenBullCond = false, bearCond = false, hiddenBearCond = false;
+
+    const p = i - lbR; // candidate pivot bar, confirmed at bar i
+    if (p - lbL >= 0) {
+      // ── pivot low → bullish divergence (price vs osc lows) ──
+      if (isPivotLow(p)) {
+        pivotLow[i] = true;
+        const curOsc = osc[p] as number;
+        const curLow = l[p];
+        if (prevLowOsc !== null) {
+          const bars = i - prevLowIdx;
+          const inRange = bars >= rangeLower && bars <= rangeUpper;
+          const oscHL = curOsc > prevLowOsc && inRange; // higher low in osc
+          const priceLL = curLow < prevLowPrice;        // lower low in price
+          const oscLL = curOsc < prevLowOsc && inRange;
+          const priceHL = curLow > prevLowPrice;
+          bullCond = priceLL && oscHL;
+          hiddenBullCond = plotHiddenBull && priceHL && oscLL;
+        }
+        prevLowOsc = curOsc;
+        prevLowPrice = curLow;
+        prevLowIdx = i;
+      }
+      // ── pivot high → bearish divergence (price vs osc highs) ──
+      if (isPivotHigh(p)) {
+        pivotHigh[i] = true;
+        const curOsc = osc[p] as number;
+        const curHigh = h[p];
+        if (prevHighOsc !== null) {
+          const bars = i - prevHighIdx;
+          const inRange = bars >= rangeLower && bars <= rangeUpper;
+          const oscLH = curOsc < prevHighOsc && inRange; // lower high in osc
+          const priceHH = curHigh > prevHighPrice;       // higher high in price
+          const oscHH = curOsc > prevHighOsc && inRange;
+          const priceLH = curHigh < prevHighPrice;
+          bearCond = priceHH && oscLH;
+          hiddenBearCond = plotHiddenBear && priceLH && oscHH;
+        }
+        prevHighOsc = curOsc;
+        prevHighPrice = curHigh;
+        prevHighIdx = i;
+      }
+    }
+
+    regularBull[i] = bullCond;
+    hiddenBull[i] = hiddenBullCond;
+    regularBear[i] = bearCond;
+    hiddenBear[i] = hiddenBearCond;
+
+    // take-profit: RSI crosses above the TP level
+    const crossTP = i > 0 && osc[i - 1] !== null && osc[i] !== null &&
+      (osc[i - 1] as number) <= takeProfitRSILevel && (osc[i] as number) > takeProfitRSILevel;
+
+    if (bullCond || hiddenBullCond) signal[i] = "BUY";
+    else if (crossTP || bearCond) signal[i] = "SELL";
+  }
+
+  return { osc, regularBull, hiddenBull, regularBear, hiddenBear, pivotLow, pivotHigh, signal };
+}
+
+// ─── Trend Strength Signals [AlgoAlpha] ────────────────────────
+// An SMA basis ± standard-deviation envelope. Trend flips to +1 when price
+// closes above both basis and upper band, to -1 when it closes below both
+// basis and lower band, otherwise it persists. BUY on a bullish trend shift
+// (crossover of trend over 0), SELL on a bearish shift. The wider `mult`
+// bands (upper1/lower1) mark take-profit crosses.
+export interface TrendStrengthResult {
+  basis: (number | null)[];     // SMA(period)
+  upper: (number | null)[];     // basis + stdev
+  lower: (number | null)[];     // basis - stdev
+  upperTP: (number | null)[];   // basis + stdev * mult (Long TP band)
+  lowerTP: (number | null)[];   // basis - stdev * mult (Short TP band)
+  trend: (1 | -1 | 0)[];
+  longTP: boolean[];            // close crosses under upperTP
+  shortTP: boolean[];           // close crosses over lowerTP
+  signal: ("BUY" | "SELL" | null)[];
+}
+
+export function trendStrengthSignals(
+  klines: KlineData[],
+  period = 20,
+  mult = 2.5,
+): TrendStrengthResult {
+  const c = closes(klines);
+  const len = klines.length;
+  const basisArr = sma(c, period);
+  const sd = stdev(c, period); // population stdev — matches ta.stdev(src, len, true)
+
+  const basis = new Array<number | null>(len).fill(null);
+  const upper = new Array<number | null>(len).fill(null);
+  const lower = new Array<number | null>(len).fill(null);
+  const upperTP = new Array<number | null>(len).fill(null);
+  const lowerTP = new Array<number | null>(len).fill(null);
+  const trend = new Array<1 | -1 | 0>(len).fill(0);
+  const longTP = new Array<boolean>(len).fill(false);
+  const shortTP = new Array<boolean>(len).fill(false);
+  const signal: ("BUY" | "SELL" | null)[] = new Array(len).fill(null);
+
+  let prevTrend: 1 | -1 | 0 = 0;
+  let prevUpperTP: number | null = null;
+  let prevLowerTP: number | null = null;
+  let prevClose: number | null = null;
+
+  for (let i = 0; i < len; i++) {
+    const b = basisArr[i];
+    const s = sd[i];
+    if (b === null || s === null) {
+      trend[i] = prevTrend;
+      prevClose = c[i];
+      continue;
+    }
+    const up = b + s;
+    const lo = b - s;
+    const upTP = b + s * mult;
+    const loTP = b - s * mult;
+    basis[i] = b; upper[i] = up; lower[i] = lo; upperTP[i] = upTP; lowerTP[i] = loTP;
+
+    let t: 1 | -1 | 0 = prevTrend;
+    if (c[i] > b && c[i] > up) t = 1;
+    if (c[i] < b && c[i] < lo) t = -1;
+    trend[i] = t;
+
+    // trend crossover / crossunder zero → trading signals
+    if (t > 0 && prevTrend <= 0) signal[i] = "BUY";
+    else if (t < 0 && prevTrend >= 0) signal[i] = "SELL";
+
+    // take-profit crosses (chart markers)
+    if (prevClose !== null && prevUpperTP !== null && prevClose >= prevUpperTP && c[i] < upTP) longTP[i] = true;
+    if (prevClose !== null && prevLowerTP !== null && prevClose <= prevLowerTP && c[i] > loTP) shortTP[i] = true;
+
+    prevTrend = t;
+    prevUpperTP = upTP;
+    prevLowerTP = loTP;
+    prevClose = c[i];
+  }
+
+  return { basis, upper, lower, upperTP, lowerTP, trend, longTP, shortTP, signal };
+}
+
 export interface AllIndicators {
   rsi: (number | null)[];
   atr: (number | null)[];
@@ -3648,6 +3854,8 @@ export interface AllIndicators {
   tmaOverlay: TMAOverlayResult;
   autoChartPatterns: AutoChartPatternsResult;
   diyStrategyBuilder: DIYBuilderResult;
+  rsiDivergence: RSIDivergenceResult;
+  trendStrength: TrendStrengthResult;
 }
 
 export function computeAll(klines: KlineData[], overrides?: {
@@ -3725,6 +3933,12 @@ export function computeAll(klines: KlineData[], overrides?: {
   diyUseCdcZone?: number;
   diyUseTrendlines?: number;
   diyUseRsi50?: number;
+  rsiDivPeriod?: number;
+  rsiDivLbL?: number;
+  rsiDivLbR?: number;
+  rsiDivTakeProfit?: number;
+  tssPeriod?: number;
+  tssMult?: number;
 }): AllIndicators {
   const c = closes(klines);
   return {
@@ -3781,5 +3995,7 @@ export function computeAll(klines: KlineData[], overrides?: {
         useRsi50Filter: (overrides?.diyUseRsi50 ?? 1) !== 0,
       });
     })(),
+    rsiDivergence: rsiDivergence(klines, overrides?.rsiDivPeriod ?? 9, overrides?.rsiDivLbL ?? 1, overrides?.rsiDivLbR ?? 3, overrides?.rsiDivTakeProfit ?? 80),
+    trendStrength: trendStrengthSignals(klines, overrides?.tssPeriod ?? 20, overrides?.tssMult ?? 2.5),
   };
 }

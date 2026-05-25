@@ -131,6 +131,12 @@ const PARAM_LABELS: Record<string, string> = {
   diyUseCdcZone: "CDC Zone (1/0)",
   diyUseTrendlines: "Trendlines (1/0)",
   diyUseRsi50: "RSI 50 (1/0)",
+  rsiDivPeriod: "RSI Period",
+  rsiDivLbL: "Pivot Left",
+  rsiDivLbR: "Pivot Right",
+  rsiDivTakeProfit: "TP RSI Level",
+  tssPeriod: "Period",
+  tssMult: "Std Dev Mult",
 };
 
 // ─── Formatting ────────────────────────────────────────────────
@@ -2175,6 +2181,20 @@ export default function KlinesPage() {
                               {key === "diyUseRsi50" && "1 = RSI &gt; 50 สำหรับ long, &lt; 50 สำหรับ short, 0 = ปิด"}
                             </p>
                           )}
+                          {strategyId === "rsi_divergence" && (
+                            <p className="text-[9px] text-muted-foreground/70">
+                              {key === "rsiDivPeriod" && "RSI Period (5-21) — คาบ RSI ที่ใช้หา divergence"}
+                              {key === "rsiDivLbL" && "Pivot Lookback Left (1-5) — แท่งซ้ายที่ใช้ยืนยัน pivot ของ RSI"}
+                              {key === "rsiDivLbR" && "Pivot Lookback Right (1-5) — แท่งขวาที่ยืนยัน pivot (มาก = ช้าแต่แม่นกว่า)"}
+                              {key === "rsiDivTakeProfit" && "Take Profit RSI Level (70-90) — ปิด long เมื่อ RSI ตัดขึ้นเหนือค่านี้"}
+                            </p>
+                          )}
+                          {strategyId === "trend_strength" && (
+                            <p className="text-[9px] text-muted-foreground/70">
+                              {key === "tssPeriod" && "Period (10-50) — คาบของ SMA และ Std Dev ที่สร้างกรอบความผันผวน"}
+                              {key === "tssMult" && "Std Dev Multiplier (1.0-4.0) — ระยะของแถบ Take Profit (upper1/lower1)"}
+                            </p>
+                          )}
                         </div>
                       </Field>
                     ))}
@@ -2923,6 +2943,40 @@ export default function KlinesPage() {
                     <div className="text-[10px] text-muted-foreground">
                       Key Value ยิ่งมาก = Trailing Stop ห่างจากราคามากขึ้น = กรอง noise ได้ดี แต่เข้า/ออกช้ากว่า
                     </div>
+                  </div>
+                )}
+
+                {strategyId === "rsi_divergence" && (
+                  <div className="rounded-md border border-border/50 bg-muted/30 px-3 py-2.5 space-y-2">
+                    <p className="text-[11px] font-medium text-foreground/90">RSI Divergence Indicator คืออะไร?</p>
+                    <p className="text-[10px] text-muted-foreground leading-relaxed">
+                      ตรวจจับ Divergence (ความขัดแย้ง) ระหว่างราคากับ RSI โดยหาจุดกลับตัว (pivot) ของ RSI ที่ยืนยันด้วย lookback ซ้าย/ขวา
+                      แล้วเทียบกับ pivot ก่อนหน้า — เมื่อราคาทำ <span className="text-emerald-500/80">Lower Low</span> แต่ RSI ทำ <span className="text-emerald-500/80">Higher Low</span> = Bullish Divergence (สัญญาณกลับตัวขึ้น)
+                    </p>
+                    <div className="flex flex-wrap gap-x-4 gap-y-1 text-[10px]">
+                      <span className="text-emerald-500">BUY → เกิด Regular หรือ Hidden Bullish Divergence</span>
+                      <span className="text-red-500">SELL → RSI ตัดขึ้นเหนือ TP Level หรือเกิด Bearish Divergence</span>
+                    </div>
+                    <p className="text-[10px] text-muted-foreground leading-relaxed">
+                      เป็นกลยุทธ์ฝั่ง Long อย่างเดียว — เข้าเมื่อเกิด Bullish Divergence และปิดเมื่อ RSI ถึงเป้ากำไร (TP Level) หรือเกิด Bearish Divergence
+                    </p>
+                  </div>
+                )}
+
+                {strategyId === "trend_strength" && (
+                  <div className="rounded-md border border-border/50 bg-muted/30 px-3 py-2.5 space-y-2">
+                    <p className="text-[11px] font-medium text-foreground/90">Trend Strength Signals [AlgoAlpha] คืออะไร?</p>
+                    <p className="text-[10px] text-muted-foreground leading-relaxed">
+                      สร้างกรอบความผันผวนจาก SMA ± Standard Deviation — เมื่อราคาปิด<span className="text-emerald-500/80">เหนือแถบบน</span> เทรนด์เปลี่ยนเป็น +1,
+                      เมื่อราคาปิด<span className="text-red-500/80">ใต้แถบล่าง</span> เทรนด์เปลี่ยนเป็น -1 สัญญาณเกิดขึ้นเมื่อเทรนด์สลับทิศ (ตัดผ่านศูนย์)
+                    </p>
+                    <div className="flex flex-wrap gap-x-4 gap-y-1 text-[10px]">
+                      <span className="text-emerald-500">BUY → เทรนด์เปลี่ยนเป็นขาขึ้น (ราคาทะลุแถบบน)</span>
+                      <span className="text-red-500">SELL → เทรนด์เปลี่ยนเป็นขาลง (ราคาหลุดแถบล่าง)</span>
+                    </div>
+                    <p className="text-[10px] text-muted-foreground leading-relaxed">
+                      Std Dev Multiplier ใช้กำหนดแถบ Take Profit (upper1/lower1) — เป็นจุดทำกำไรเมื่อราคาวิ่งสุดทางแล้วเริ่มย่อกลับ
+                    </p>
                   </div>
                 )}
 

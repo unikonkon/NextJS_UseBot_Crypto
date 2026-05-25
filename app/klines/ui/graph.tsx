@@ -133,6 +133,8 @@ export default function KlineGraph({ klines, indicators: rawIndicators, btResult
   const [showPivotHL, setShowPivotHL] = useState(false);
   const [showTma, setShowTma] = useState(false);
   const [showAcp, setShowAcp] = useState(false);
+  const [showRsiDiv, setShowRsiDiv] = useState(false);
+  const [showTrendStrength, setShowTrendStrength] = useState(false);
   const [showRsiToggle, setShowRsiToggle] = useState(true);
   const [showMacdToggle, setShowMacdToggle] = useState(true);
   const [showSqzToggle, setShowSqzToggle] = useState(false);
@@ -164,6 +166,8 @@ export default function KlineGraph({ klines, indicators: rawIndicators, btResult
     setShowPivotHL(false);
     setShowTma(false);
     setShowAcp(false);
+    setShowRsiDiv(false);
+    setShowTrendStrength(false);
     // Reset panels
     setShowRsiToggle(false);
     setShowMacdToggle(false);
@@ -197,6 +201,8 @@ export default function KlineGraph({ klines, indicators: rawIndicators, btResult
       case "pivot_points_hl": setShowPivotHL(true); break;
       case "tma_overlay": setShowTma(true); break;
       case "auto_chart_patterns": setShowAcp(true); break;
+      case "rsi_divergence": setShowRsiDiv(true); break;
+      case "trend_strength": setShowTrendStrength(true); break;
     }
   }, [strategyId]);
 
@@ -1376,6 +1382,85 @@ export default function KlineGraph({ klines, indicators: rawIndicators, btResult
           }
         }
       }
+
+
+      // RSI Divergence markers (oscillator divergence on main chart)
+      if (showRsiDiv && !btResult) {
+        const rd = indicators.rsiDivergence;
+        const rdMarkers: SeriesMarker<UTCTimestamp>[] = [];
+        for (let i = 0; i < klines.length; i++) {
+          if (rd.regularBull[i]) {
+            rdMarkers.push({ time: times[i], position: "belowBar", color: "#10b981", shape: "arrowUp", text: "Bull" });
+          } else if (rd.hiddenBull[i]) {
+            rdMarkers.push({ time: times[i], position: "belowBar", color: "#22c55e", shape: "arrowUp", text: "H-Bull" });
+          }
+          if (rd.regularBear[i]) {
+            rdMarkers.push({ time: times[i], position: "aboveBar", color: "#a855f7", shape: "arrowDown", text: "Bear" });
+          } else if (rd.hiddenBear[i]) {
+            rdMarkers.push({ time: times[i], position: "aboveBar", color: "#c084fc", shape: "arrowDown", text: "H-Bear" });
+          }
+        }
+        if (rdMarkers.length > 0) {
+          const seen = new Map<number, SeriesMarker<UTCTimestamp>>();
+          for (const m of rdMarkers) seen.set(m.time as number, m);
+          const md = Array.from(seen.values()).sort((a, b) => (a.time as number) - (b.time as number));
+          createSeriesMarkers(candleSeries, md);
+        }
+      }
+
+      // Trend Strength Signals overlay (SMA basis + volatility bands)
+      if (showTrendStrength) {
+        const tss = indicators.trendStrength;
+        const upperData = tss.upper.map((v, i) => (v !== null ? { time: times[i], value: v } : { time: times[i] }));
+        const lowerData = tss.lower.map((v, i) => (v !== null ? { time: times[i], value: v } : { time: times[i] }));
+        const basisData = tss.basis.map((v, i) => (v !== null ? { time: times[i], value: v } : { time: times[i] }));
+
+        chart.addSeries(LineSeries, {
+          color: "#00ffbb",
+          lineWidth: 1,
+          priceLineVisible: false,
+          lastValueVisible: false,
+          crosshairMarkerVisible: false,
+        }).setData(upperData as any);
+
+        chart.addSeries(LineSeries, {
+          color: "#ff1100",
+          lineWidth: 1,
+          priceLineVisible: false,
+          lastValueVisible: false,
+          crosshairMarkerVisible: false,
+        }).setData(lowerData as any);
+
+        chart.addSeries(LineSeries, {
+          color: "rgba(148,163,184,0.6)",
+          lineWidth: 1,
+          lineStyle: 2,
+          priceLineVisible: false,
+          lastValueVisible: false,
+          crosshairMarkerVisible: false,
+        }).setData(basisData as any);
+
+        if (!btResult) {
+          const tssMarkers: SeriesMarker<UTCTimestamp>[] = [];
+          for (let i = 0; i < klines.length; i++) {
+            if (tss.signal[i] === "BUY") {
+              tssMarkers.push({ time: times[i], position: "belowBar", color: "#00ffbb", shape: "arrowUp", text: "▲" });
+            } else if (tss.signal[i] === "SELL") {
+              tssMarkers.push({ time: times[i], position: "aboveBar", color: "#ff1100", shape: "arrowDown", text: "▼" });
+            } else if (tss.longTP[i]) {
+              tssMarkers.push({ time: times[i], position: "aboveBar", color: "#ff1100", shape: "circle", text: "TP" });
+            } else if (tss.shortTP[i]) {
+              tssMarkers.push({ time: times[i], position: "belowBar", color: "#00ffbb", shape: "circle", text: "TP" });
+            }
+          }
+          if (tssMarkers.length > 0) {
+            const seen = new Map<number, SeriesMarker<UTCTimestamp>>();
+            for (const m of tssMarkers) seen.set(m.time as number, m);
+            const md = Array.from(seen.values()).sort((a, b) => (a.time as number) - (b.time as number));
+            createSeriesMarkers(candleSeries, md);
+          }
+        }
+      }
     }
 
     // ─── Backtest markers on main chart ──────────────────────
@@ -1728,7 +1813,7 @@ export default function KlineGraph({ klines, indicators: rawIndicators, btResult
       sqzChartRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [klines, indicators, btResult, strategyId, isDark, showVwap, showCdcEma, showSupertrendLine, showSmcOb, showSR, showTrendlines, showUtBot, showMsbOb, showChandelier, showTonyEma, showSuperTrendStrat, showTurtle, showScalpPB, showTrendlineBO, showSmcBO, showSRHV, showCdcV2, showZigzagPP, showPriceActionSMC, showPriceActionSR, showCandlestickP, showPivotHL, showTma, showAcp, showRsi, showMacd, showSqz]);
+  }, [klines, indicators, btResult, strategyId, isDark, showVwap, showCdcEma, showSupertrendLine, showSmcOb, showSR, showTrendlines, showUtBot, showMsbOb, showChandelier, showTonyEma, showSuperTrendStrat, showTurtle, showScalpPB, showTrendlineBO, showSmcBO, showSRHV, showCdcV2, showZigzagPP, showPriceActionSMC, showPriceActionSR, showCandlestickP, showPivotHL, showTma, showAcp, showRsiDiv, showTrendStrength, showRsi, showMacd, showSqz]);
 
   if (klines.length === 0) return null;
 
@@ -1793,6 +1878,8 @@ export default function KlineGraph({ klines, indicators: rawIndicators, btResult
           <OverlayToggle label="PivotHL" color="#ef5350" secondColor="#26a69a" active={showPivotHL} onToggle={() => setShowPivotHL(v => !v)} />
           <OverlayToggle label="TMA" color="#6aff00" secondColor="#ff0500" active={showTma} onToggle={() => setShowTma(v => !v)} />
           <OverlayToggle label="ACP" color="#10b981" secondColor="#ef4444" active={showAcp} onToggle={() => setShowAcp(v => !v)} />
+          <OverlayToggle label="RSI Div" color="#10b981" secondColor="#a855f7" active={showRsiDiv} onToggle={() => setShowRsiDiv(v => !v)} />
+          <OverlayToggle label="Trend Str" color="#00ffbb" secondColor="#ff1100" active={showTrendStrength} onToggle={() => setShowTrendStrength(v => !v)} />
           <span className="text-[9px] text-muted-foreground/30 mx-0.5">|</span>
           <span className="text-[9px] font-medium text-muted-foreground/60 uppercase tracking-wider mr-1">Panel:</span>
           <OverlayToggle label="RSI" color="#a78bfa" active={showRsiToggle} onToggle={() => setShowRsiToggle(v => !v)} />
@@ -1825,6 +1912,8 @@ export default function KlineGraph({ klines, indicators: rawIndicators, btResult
               setShowPivotHL(false);
               setShowTma(false);
               setShowAcp(false);
+              setShowRsiDiv(false);
+              setShowTrendStrength(false);
               setShowRsiToggle(false);
               setShowMacdToggle(false);
               setShowSqzToggle(false);
