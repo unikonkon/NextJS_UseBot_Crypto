@@ -54,6 +54,8 @@ const INTERVAL_GROUPS: Record<string, Interval[]> = {
   "วัน+": ["1d", "3d", "1w", "1M"],
 };
 
+const ALL_INTERVALS: Interval[] = Object.values(INTERVAL_GROUPS).flat();
+
 const PARAM_LABELS: Record<string, string> = {
   period: "RSI Period",
   buyThreshold: "ซื้อเมื่อ RSI <",
@@ -427,6 +429,7 @@ export default function KlinesPage() {
   useEffect(() => { rateLimitRef.current = rateLimit; }, [rateLimit]);
 
   // Multi-pair state
+  const [batchIntervals, setBatchIntervals] = useState<Set<Interval>>(new Set());
   const [selectedPairs, setSelectedPairs] = useState<PairSpec[]>([]);
   const [loadedCombos, setLoadedCombos] = useState<Map<string, LoadedCombo>>(new Map());
   const [activeComboKey, setActiveComboKey] = useState<string | null>(null);
@@ -525,16 +528,33 @@ export default function KlinesPage() {
   }, []);
 
   // ─── Add/Remove pairs ───────────────────────────────────────
+  const toggleBatchInterval = useCallback((iv: Interval) => {
+    setBatchIntervals(prev => {
+      const next = new Set(prev);
+      if (next.has(iv)) next.delete(iv);
+      else next.add(iv);
+      return next;
+    });
+  }, []);
+
+  // เพิ่ม 1 เหรียญ × ทุกช่วงเวลาที่เลือก (fallback = ช่วงเวลาเดี่ยว)
   const addPairToBatch = useCallback(() => {
     const sym = activeSymbol;
-    const intv = interval;
     const lim = parseInt(limit, 10) || 200;
-    const key = comboKey(sym, intv);
+    const intervals: Interval[] = batchIntervals.size > 0
+      ? ALL_INTERVALS.filter(iv => batchIntervals.has(iv))
+      : [interval];
     setSelectedPairs(prev => {
-      if (prev.some(p => comboKey(p.symbol, p.interval) === key)) return prev;
-      return [...prev, { symbol: sym, interval: intv, limit: lim }];
+      const next = [...prev];
+      for (const intv of intervals) {
+        const key = comboKey(sym, intv);
+        if (!next.some(p => comboKey(p.symbol, p.interval) === key)) {
+          next.push({ symbol: sym, interval: intv, limit: lim });
+        }
+      }
+      return next;
     });
-  }, [activeSymbol, interval, limit]);
+  }, [activeSymbol, interval, limit, batchIntervals]);
 
   const removePair = useCallback((key: string) => {
     setSelectedPairs(prev => prev.filter(p => comboKey(p.symbol, p.interval) !== key));
@@ -908,7 +928,7 @@ export default function KlinesPage() {
           </CardHeader>
           <CardContent className="space-y-4">
             {/* Step 1: เลือกคู่เหรียญ */}
-            <div className="flex flex-wrap gap-10 items-end">
+            <div className="flex flex-wrap gap-10 items-start">
               <div>
                 <StepLabel num={1} text="เลือกคู่เหรียญ" />
                 <div className="flex flex-wrap gap-3 items-end">
@@ -932,7 +952,7 @@ export default function KlinesPage() {
               {/* Step 2: ช่วงเวลา */}
               <div>
                 <StepLabel num={2} text="ช่วงเวลา" />
-                <Field label="Interval">
+                <Field label="Interval (ดึง 1 เหรียญ)">
                   <Select value={interval} onValueChange={(v) => { if (v) setInterval(v as Interval); }}>
                     <SelectTrigger className="w-28"><SelectValue /></SelectTrigger>
                     <SelectContent>
@@ -944,14 +964,48 @@ export default function KlinesPage() {
                     </SelectContent>
                   </Select>
                 </Field>
-              </div>
-            </div>
 
+                {/* Step 2b: เลือกหลายช่วง (สำหรับ Batch) */}
+                <div className="flex flex-wrap gap-3 items-end">
+                  <div className="flex items-center justify-between gap-2 mb-1.5">
+                    <p className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+                      หรือ เลือกหลายช่วงสำหรับ Batch ({batchIntervals.size} ช่วง)
+                    </p>
+                    {batchIntervals.size > 0 && (
+                      <button
+                        onClick={() => setBatchIntervals(new Set())}
+                        className="text-[10px] text-muted-foreground hover:text-red-500 bg-red-500/10 px-2 py-0.5 rounded-md"
+                      >
+                        ล้าง
+                      </button>
+                    )}
+                  </div>
+                  <div className="flex flex-wrap gap-1">
+                    {ALL_INTERVALS.map(iv => {
+                      const on = batchIntervals.has(iv);
+                      return (
+                        <button
+                          key={iv}
+                          onClick={() => toggleBatchInterval(iv)}
+                          className={`rounded border px-2 py-0.5 text-[11px] font-mono transition-colors ${on
+                            ? "border-emerald-500 bg-emerald-500/15 text-emerald-500 font-semibold"
+                            : "border-border text-muted-foreground hover:bg-muted"
+                            }`}
+                        >
+                          {iv}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+
+            </div>
 
             <Separator />
 
             {/* Step 3: จำนวนแท่งเทียน หรือ เริ่มต้น-สิ้นสุด */}
-            <div className="flex flex-wrap gap-10 items-end">
+            <div className="flex flex-wrap gap-10 items-start">
               <div>
                 <StepLabel num={3} text="จำนวนแท่งเทียน หรือ กำหนดช่วงเวลา เริ่มต้น–สิ้นสุด" />
                 <div className="flex flex-wrap gap-3 items-end">
@@ -995,7 +1049,7 @@ export default function KlinesPage() {
                     variant="outline"
                     className="h-9 border-emerald-500/30 bg-emerald-500/10 text-emerald-500 hover:bg-emerald-500/20"
                   >
-                    + เพิ่มเข้า Batch ({activeSymbol}·{interval})
+                    + เพิ่มเข้า Batch ({activeSymbol} × {batchIntervals.size > 0 ? `${batchIntervals.size} ช่วง` : interval})
                   </Button>
                   <Button onClick={downloadRealtime} disabled={loading} variant="ghost" size="sm" className="h-9 text-[11px]">
                     ⬇ ดาวน์โหลด CSV
