@@ -369,6 +369,26 @@ function fmtDateShort(dt?: string): string {
   return d.toLocaleString("en-GB", { day: "2-digit", month: "2-digit", year: "2-digit", hour: "2-digit", minute: "2-digit" });
 }
 
+// แปลง klines เป็น CSV (รูปแบบเดียวกับดาวน์โหลดเดี่ยว)
+function klinesToCsv(klines: KlineData[]): string {
+  const header = "OpenTime,Open,High,Low,Close,Volume,CloseTime,QuoteAssetVolume,NumberOfTrades,TakerBuyBaseVolume,TakerBuyQuoteVolume";
+  const rows = klines.map(k =>
+    `${new Date(k.openTime).toISOString()},${k.open},${k.high},${k.low},${k.close},${k.volume},${new Date(k.closeTime).toISOString()},${k.quoteAssetVolume},${k.numberOfTrades},${k.takerBuyBaseVolume},${k.takerBuyQuoteVolume}`
+  );
+  return [header, ...rows].join("\n");
+}
+
+// trigger download ไฟล์ CSV
+function downloadCsv(filename: string, csv: string) {
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
 // ─── Mini sparkline (close prices) ────────────────────────────
 function Sparkline({ klines }: { klines: KlineData[] }) {
   if (klines.length < 2) return <div className="h-8 w-full bg-muted/30" />;
@@ -732,6 +752,21 @@ export default function KlinesPage() {
     setMultiBtResults(null);
     setMultiBtExpanded(new Set());
   }, []);
+
+  // ดาวน์โหลดทุกคู่ที่โหลดแล้วเป็น CSV (1 ไฟล์/คู่)
+  const downloadAllCombos = useCallback(async () => {
+    const combos = Array.from(loadedCombos.values());
+    for (let i = 0; i < combos.length; i++) {
+      const combo = combos[i];
+      if (combo.klines.length === 0) continue;
+      const suffix = combo.mode === "historical" ? "historical" : "realtime";
+      downloadCsv(
+        `${combo.symbol}_${combo.interval}_${combo.klines.length}_${suffix}.csv`,
+        klinesToCsv(combo.klines),
+      );
+      if (i < combos.length - 1) await sleep(300); // กัน browser block หลายไฟล์
+    }
+  }, [loadedCombos]);
 
   // ─── Multi-Backtest: ทุก strategies × ทุก combos ────────────
   const runMultiBacktest = useCallback(() => {
@@ -1351,9 +1386,19 @@ export default function KlinesPage() {
                   <CardTitle>คู่ที่โหลดแล้ว ({loadedCombos.size})</CardTitle>
                   <CardDescription>คลิกการ์ดเพื่อดูกราฟด้านล่าง · ใช้รัน Backtest ทั้งหมดได้</CardDescription>
                 </div>
-                <Button variant="outline" size="sm" onClick={clearLoadedCombos}>
-                  ล้างทั้งหมด
-                </Button>
+                <div className="flex items-center gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={downloadAllCombos}
+                    className="border-sky-500/30 bg-sky-500/10 text-sky-500 hover:bg-sky-500/20"
+                  >
+                    ⬇ ดาวน์โหลด CSV ทั้งหมด ({loadedCombos.size})
+                  </Button>
+                  <Button variant="outline" size="sm" onClick={clearLoadedCombos}>
+                    ล้างทั้งหมด
+                  </Button>
+                </div>
               </div>
             </CardHeader>
             <CardContent>
