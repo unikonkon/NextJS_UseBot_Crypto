@@ -67,7 +67,11 @@ function OverlayToggle({ label, color, secondColor, active, onToggle }: {
 }
 
 // ─── Component ──────────────────────────────────────────────────
-export default function KlineGraph({ klines, indicators, btResult, strategyId }: KlineGraphProps) {
+export default function KlineGraph({ klines, indicators: rawIndicators, btResult, strategyId }: KlineGraphProps) {
+  // กัน runtime crash: ใช้ indicators เฉพาะเมื่อความยาวตรงกับ klines
+  // (ตอนสลับ combo, klines เปลี่ยนก่อน indicators จะคำนวณใหม่เสร็จ → ความยาวไม่ตรงชั่วคราว)
+  const indicators = (rawIndicators && rawIndicators.rsi.length === klines.length) ? rawIndicators : null;
+
   const mainRef = useRef<HTMLDivElement>(null);
   const rsiRef = useRef<HTMLDivElement>(null);
   const macdRef = useRef<HTMLDivElement>(null);

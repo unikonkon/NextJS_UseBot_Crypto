@@ -736,6 +736,8 @@ export default function KlinesPage() {
     setActiveComboKey(key);
     const combo = loadedCombos.get(key);
     if (combo) {
+      // ล้าง indicators ก่อน เพื่อกัน chart render ด้วย indicators เก่า (ความยาวไม่ตรง klines ใหม่)
+      setIndicators(null);
       setKlines(combo.klines);
       setBtResult(null);
       setAllBtResults(null);
