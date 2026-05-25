@@ -330,12 +330,21 @@ function RateLimitBar({
 }
 
 // ─── Types: multi-fetch ───────────────────────────────────────
-type PairSpec = { symbol: string; interval: Interval; limit: number };
+type FetchMode = "realtime" | "historical";
+type PairSpec = {
+  symbol: string;
+  interval: Interval;
+  limit: number;
+  mode: FetchMode;
+  startTime?: string; // datetime-local string (historical)
+  endTime?: string;   // datetime-local string (historical)
+};
 type LoadedCombo = {
   key: string;
   symbol: string;
   interval: Interval;
   limit: number;
+  mode: FetchMode;
   klines: KlineData[];
   loadedAt: Date;
   weight: number;
@@ -351,6 +360,14 @@ type MultiBtRow = {
 
 const comboKey = (s: string, i: string) => `${s}_${i}`;
 const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
+
+// แปลง datetime-local string เป็นรูปแบบสั้น (dd/mm/yy HH:MM)
+function fmtDateShort(dt?: string): string {
+  if (!dt) return "ปัจจุบัน";
+  const d = new Date(dt);
+  if (isNaN(d.getTime())) return dt;
+  return d.toLocaleString("en-GB", { day: "2-digit", month: "2-digit", year: "2-digit", hour: "2-digit", minute: "2-digit" });
+}
 
 // ─── Mini sparkline (close prices) ────────────────────────────
 function Sparkline({ klines }: { klines: KlineData[] }) {
@@ -512,10 +529,10 @@ export default function KlinesPage() {
   // ─── Rate limit gate: รอจนกว่าจะมี capacity ──────────────────
   // ถ้า usedWeight1m + cost > 90% ของ limit → รอ
   // ถ้า lastUpdate ผ่านมา > 65 วินาที → assume Binance reset counter แล้ว → ไปต่อ
-  const waitForCapacity = useCallback(async (cost: number, signal: AbortSignal): Promise<void> => {
+  const waitForCapacity = useCallback(async (cost: number, signal?: AbortSignal): Promise<void> => {
     const THRESHOLD = BINANCE_WEIGHT_LIMIT_1M * 0.9;
     while (true) {
-      if (signal.aborted) throw new Error("aborted");
+      if (signal?.aborted) throw new Error("aborted");
       const used = rateLimitRef.current.usedWeight1m;
       const lastMs = rateLimitRef.current.lastUpdate?.getTime() ?? 0;
       const elapsed = Date.now() - lastMs;
@@ -526,6 +543,42 @@ export default function KlinesPage() {
       await sleep(3000);
     }
   }, []);
+
+  // ─── ดึง klines เรียลไทม์ (รองรับ > 1000 ด้วยการ paginate ย้อนหลัง) ──
+  // Binance klines แคปที่ 1000 แถว/call → ถ้า target > 1000 จะวน fetch โดยเลื่อน endTime
+  const fetchRealtimeKlines = useCallback(async (
+    sym: string, intv: Interval, target: number, signal?: AbortSignal
+  ): Promise<KlineData[]> => {
+    if (target <= 1000) {
+      await waitForCapacity(klineWeight(target), signal);
+      const params = new URLSearchParams({ symbol: sym, interval: intv, limit: String(target) });
+      const res = await fetch(`/api/klines?${params}`, signal ? { signal } : undefined);
+      if (!res.ok) { const b = await res.json().catch(() => ({})); throw new Error(b.error || `HTTP ${res.status}`); }
+      bumpRateLimit(res, target);
+      return (await res.json() as BinanceKlineRaw[]).map(parseKline);
+    }
+    // paginate ย้อนหลังทีละ 1000 แถว (weight 5/หน้า)
+    let all: KlineData[] = [];
+    let endCursor: number | undefined;
+    while (all.length < target) {
+      if (signal?.aborted) break;
+      const pageLimit = Math.min(1000, target - all.length);
+      await waitForCapacity(klineWeight(pageLimit), signal);
+      const params = new URLSearchParams({ symbol: sym, interval: intv, limit: String(pageLimit) });
+      if (endCursor) params.set("endTime", String(endCursor));
+      const res = await fetch(`/api/klines?${params}`, signal ? { signal } : undefined);
+      if (!res.ok) { const b = await res.json().catch(() => ({})); throw new Error(b.error || `HTTP ${res.status}`); }
+      bumpRateLimit(res, pageLimit);
+      const raw = await res.json() as BinanceKlineRaw[];
+      if (raw.length === 0) break;
+      const parsed = raw.map(parseKline);
+      all = [...parsed, ...all]; // prepend (เก่ากว่าอยู่ข้างหน้า)
+      endCursor = parsed[0].openTime - 1;
+      if (raw.length < pageLimit) break; // หมดข้อมูลฝั่งอดีต
+      await sleep(100);
+    }
+    return all;
+  }, [bumpRateLimit, waitForCapacity]);
 
   // ─── Add/Remove pairs ───────────────────────────────────────
   const toggleBatchInterval = useCallback((iv: Interval) => {
@@ -538,9 +591,12 @@ export default function KlinesPage() {
   }, []);
 
   // เพิ่ม 1 เหรียญ × ทุกช่วงเวลาที่เลือก (fallback = ช่วงเวลาเดี่ยว)
+  // เก็บ mode ตามที่เลือกใน Step 3: ถ้ามี startTime/endTime → historical, ไม่งั้น → realtime
   const addPairToBatch = useCallback(() => {
     const sym = activeSymbol;
     const lim = parseInt(limit, 10) || 200;
+    const isHistorical = !!startTime || !!endTime;
+    const mode: FetchMode = isHistorical ? "historical" : "realtime";
     const intervals: Interval[] = batchIntervals.size > 0
       ? ALL_INTERVALS.filter(iv => batchIntervals.has(iv))
       : [interval];
@@ -549,12 +605,19 @@ export default function KlinesPage() {
       for (const intv of intervals) {
         const key = comboKey(sym, intv);
         if (!next.some(p => comboKey(p.symbol, p.interval) === key)) {
-          next.push({ symbol: sym, interval: intv, limit: lim });
+          next.push({
+            symbol: sym,
+            interval: intv,
+            limit: lim,
+            mode,
+            startTime: isHistorical ? startTime : undefined,
+            endTime: isHistorical ? endTime : undefined,
+          });
         }
       }
       return next;
     });
-  }, [activeSymbol, interval, limit, batchIntervals]);
+  }, [activeSymbol, interval, limit, batchIntervals, startTime, endTime]);
 
   const removePair = useCallback((key: string) => {
     setSelectedPairs(prev => prev.filter(p => comboKey(p.symbol, p.interval) !== key));
@@ -575,32 +638,54 @@ export default function KlinesPage() {
         const pair = selectedPairs[i];
         if (controller.signal.aborted) break;
         setBatchProgress({ current: i, total: selectedPairs.length, waiting: false });
-
-        const cost = klineWeight(pair.limit);
-        await waitForCapacity(cost, controller.signal);
-
-        const params = new URLSearchParams({
-          symbol: pair.symbol,
-          interval: pair.interval,
-          limit: String(pair.limit),
-        });
-        const res = await fetch(`/api/klines?${params}`, { signal: controller.signal });
-        if (!res.ok) {
-          const b = await res.json().catch(() => ({}));
-          throw new Error(`${pair.symbol}·${pair.interval}: ${b.error || `HTTP ${res.status}`}`);
-        }
-        bumpRateLimit(res, pair.limit);
-        const raw: BinanceKlineRaw[] = await res.json();
-        const klinesData = raw.map(parseKline);
         const key = comboKey(pair.symbol, pair.interval);
+
+        let klinesData: KlineData[] = [];
+        let totalWeight = 0;
+
+        if (pair.mode === "historical" && pair.startTime) {
+          // ── Historical: loop ทีละ 1000 แท่ง (weight 5/หน้า) พร้อม rate-limit gate ──
+          const st = new Date(pair.startTime).getTime();
+          const et = pair.endTime ? new Date(pair.endTime).getTime() : Date.now();
+          let cur = st;
+          while (cur < et) {
+            if (controller.signal.aborted) break;
+            await waitForCapacity(5, controller.signal);
+            const params = new URLSearchParams({
+              symbol: pair.symbol, interval: pair.interval, limit: "1000",
+              startTime: String(cur), endTime: String(et),
+            });
+            const res = await fetch(`/api/klines?${params}`, { signal: controller.signal });
+            if (!res.ok) {
+              const b = await res.json().catch(() => ({}));
+              throw new Error(`${pair.symbol}·${pair.interval}: ${b.error || `HTTP ${res.status}`}`);
+            }
+            bumpRateLimit(res, 1000);
+            totalWeight += 5;
+            const raw: BinanceKlineRaw[] = await res.json();
+            if (raw.length === 0) break;
+            const parsed = raw.map(parseKline);
+            klinesData.push(...parsed);
+            const last = parsed[parsed.length - 1].closeTime;
+            if (last >= et || raw.length < 1000) break;
+            cur = last + 1;
+            await sleep(100);
+          }
+        } else {
+          // ── Realtime: ดึงตาม limit (paginate ถ้า > 1000) ──
+          klinesData = await fetchRealtimeKlines(pair.symbol, pair.interval, pair.limit, controller.signal);
+          totalWeight = Math.ceil(pair.limit / 1000) * klineWeight(Math.min(pair.limit, 1000));
+        }
+
         const combo: LoadedCombo = {
           key,
           symbol: pair.symbol,
           interval: pair.interval,
           limit: pair.limit,
+          mode: pair.mode,
           klines: klinesData,
           loadedAt: new Date(),
-          weight: cost,
+          weight: totalWeight,
         };
         setLoadedCombos(prev => new Map(prev).set(key, combo));
         // เปิดอันแรกที่โหลดสำเร็จเป็น active
@@ -614,7 +699,7 @@ export default function KlinesPage() {
       setTimeout(() => setBatchProgress(null), 1500);
       batchAbortRef.current = null;
     }
-  }, [selectedPairs, bumpRateLimit, waitForCapacity]);
+  }, [selectedPairs, bumpRateLimit, waitForCapacity, fetchRealtimeKlines]);
 
   // ─── Combo actions ──────────────────────────────────────────
   const selectCombo = useCallback((key: string) => {
@@ -686,7 +771,7 @@ export default function KlinesPage() {
     }, 10);
   }, [loadedCombos, feesPct]);
 
-  // ─── Fetch Real-time ────────────────────────────────────────
+  // ─── Fetch Real-time (รองรับ > 1000 ผ่าน paginate) ──────────
   const fetchRealtime = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -694,18 +779,22 @@ export default function KlinesPage() {
     setIndicators(null);
     setBtResult(null);
     setAllBtResults(null);
+    const target = parseInt(limit, 10) || 200;
     setBacktestProgress(null);
+    const controller = new AbortController();
+    abortRef.current = controller;
     try {
-      const params = new URLSearchParams({ symbol: activeSymbol, interval, limit });
-      const res = await fetch(`/api/klines?${params}`);
-      if (!res.ok) { const b = await res.json(); throw new Error(b.error || `HTTP ${res.status}`); }
-      bumpRateLimit(res, parseInt(limit, 10) || 200);
-      const raw: BinanceKlineRaw[] = await res.json();
-      setKlines(raw.map(parseKline));
+      const data = await fetchRealtimeKlines(activeSymbol, interval, target, controller.signal);
+      setKlines(data);
       setLastFetch(new Date());
-    } catch (err) { setError(String(err)); }
-    finally { setLoading(false); }
-  }, [activeSymbol, interval, limit, bumpRateLimit]);
+    } catch (err) {
+      if (!controller.signal.aborted) setError(String(err));
+    } finally {
+      setLoading(false);
+      setBacktestProgress(null);
+      abortRef.current = null;
+    }
+  }, [activeSymbol, interval, limit, fetchRealtimeKlines]);
 
   // ─── Download (ตาม mode: Realtime หรือ Historical) ──────────
   const downloadRealtime = useCallback(async () => {
@@ -821,11 +910,11 @@ export default function KlinesPage() {
     }
   }, [activeSymbol, interval, startTime, endTime, bumpRateLimit]);
 
-  // ─── ดึงข้อมูล 1 เหรียญ (เลือก mode ตาม startTime) ─────────────
+  // ─── ดึงข้อมูล 1 เหรียญ (เลือก mode ตาม startTime/endTime) ─────
   const fetchSingle = useCallback(() => {
-    if (startTime) fetchHistorical();
+    if (startTime || endTime) fetchHistorical();
     else fetchRealtime();
-  }, [startTime, fetchHistorical, fetchRealtime]);
+  }, [startTime, endTime, fetchHistorical, fetchRealtime]);
 
   // ─── Run Backtest ───────────────────────────────────────────
   const runBt = useCallback(() => {
@@ -862,6 +951,17 @@ export default function KlinesPage() {
       finally { setAllBtRunning(false); }
     }, 10);
   }, [klines, feesPct]);
+
+  // ─── Reset ค่าตั้งค่า & ดึงข้อมูล ทั้งหมด (กลับค่าเริ่มต้น) ──────
+  const resetConfig = useCallback(() => {
+    setSymbol("BTCUSDT");
+    setCustomSymbol("");
+    setInterval("1h");
+    setLimit("200");
+    setStartTime("");
+    setEndTime("");
+    setBatchIntervals(new Set());
+  }, []);
 
   // Summary stats
   const summary = useMemo(() => {
@@ -921,10 +1021,23 @@ export default function KlinesPage() {
         {/* ═══ CONFIG + FETCH (รวม flow เป็นขั้นตอน) ═══ */}
         <Card size="sm">
           <CardHeader>
-            <CardTitle>ตั้งค่า &amp; ดึงข้อมูล</CardTitle>
-            <CardDescription>
-              เลือกคู่เหรียญ → ช่วงเวลา → จำนวนแท่งเทียน/ช่วงวันที่ → ดึงข้อมูล 1 เหรียญ หรือ เพิ่มเข้า Batch
-            </CardDescription>
+            <div className="flex items-start justify-between gap-2">
+              <div>
+                <CardTitle>ตั้งค่า &amp; ดึงข้อมูล</CardTitle>
+                <CardDescription>
+                  เลือกคู่เหรียญ → ช่วงเวลา → จำนวนแท่งเทียน/ช่วงวันที่ → ดึงข้อมูล 1 เหรียญ หรือ เพิ่มเข้า Batch
+                </CardDescription>
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={resetConfig}
+                disabled={loading || batchRunning}
+                className="shrink-0 border-red-500/30 bg-red-500/10 text-[11px] text-red-500 hover:bg-red-500/20"
+              >
+                ↺ รีเซ็ตค่า
+              </Button>
+            </div>
           </CardHeader>
           <CardContent className="space-y-4">
             {/* Step 1: เลือกคู่เหรียญ */}
@@ -1008,33 +1121,62 @@ export default function KlinesPage() {
             <div className="flex flex-wrap gap-10 items-start">
               <div>
                 <StepLabel num={3} text="จำนวนแท่งเทียน หรือ กำหนดช่วงเวลา เริ่มต้น–สิ้นสุด" />
-                <div className="flex flex-wrap gap-3 items-end">
-                  <Field label="จำนวนแท่งเทียน (เรียลไทม์)">
-                    <Select value={limit} onValueChange={(v) => { if (v) setLimit(v); }}>
-                      <SelectTrigger className="w-28"><SelectValue /></SelectTrigger>
-                      <SelectContent>
-                        {["50", "100", "200", "500", "1000"].map(l => <SelectItem key={l} value={l}>{l}</SelectItem>)}
-                      </SelectContent>
-                    </Select>
-                  </Field>
-                  <span className="pb-2 text-[10px] font-medium text-muted-foreground">— หรือ —</span>
-                  <Field label="ย้อนหลัง: เริ่มต้น">
-                    <Input type="datetime-local" value={startTime} onChange={e => setStartTime(e.target.value)} className="w-44" />
-                  </Field>
-                  <Field label="สิ้นสุด">
-                    <Input type="datetime-local" value={endTime} onChange={e => setEndTime(e.target.value)} className="w-44" />
-                  </Field>
-                  {startTime && (
-                    <Button variant="ghost" size="sm" className="h-9 text-[10px]" onClick={() => { setStartTime(""); setEndTime(""); }}>
-                      ล้างวันที่
-                    </Button>
-                  )}
-                </div>
-                <p className="mt-1.5 text-[10px] text-muted-foreground">
-                  {startTime
-                    ? "🕐 โหมด: ดึงย้อนหลัง — ใช้ช่วงเวลา เริ่มต้น–สิ้นสุด"
-                    : `⚡ โหมด: เรียลไทม์ — ดึง ${limit} แท่งล่าสุด`}
-                </p>
+                {(() => {
+                  const isHistorical = !!startTime || !!endTime;
+                  return (
+                    <>
+                      <div className="flex flex-wrap gap-3 items-end">
+                        <div className={isHistorical ? "opacity-40 pointer-events-none" : ""}>
+                          <Field label="จำนวนแท่งเทียน (เรียลไทม์)">
+                            <Select
+                              value={limit}
+                              disabled={isHistorical}
+                              onValueChange={(v) => {
+                                if (!v) return;
+                                setLimit(v);
+                                // เลือกจำนวนแท่งเทียน → ล้างค่าย้อนหลัง
+                                setStartTime("");
+                                setEndTime("");
+                              }}
+                            >
+                              <SelectTrigger className="w-28"><SelectValue /></SelectTrigger>
+                              <SelectContent>
+                                {["50", "100", "200", "300", "500", "1000", "1500", "2000", "2500", "3000", "3500", "4000", "4500", "5000"].map(l => <SelectItem key={l} value={l}>{l}</SelectItem>)}
+                              </SelectContent>
+                            </Select>
+                          </Field>
+                        </div>
+                        <span className="pb-2 text-[10px] font-medium text-muted-foreground">— หรือ —</span>
+                        <Field label="ย้อนหลัง: เริ่มต้น">
+                          <Input
+                            type="datetime-local"
+                            value={startTime}
+                            onChange={e => { setStartTime(e.target.value); }}
+                            className="w-44"
+                          />
+                        </Field>
+                        <Field label="สิ้นสุด">
+                          <Input
+                            type="datetime-local"
+                            value={endTime}
+                            onChange={e => { setEndTime(e.target.value); }}
+                            className="w-44"
+                          />
+                        </Field>
+                        {isHistorical && (
+                          <Button variant="ghost" size="sm" className="h-9 text-[10px] bg-red-500/10 px-2 py-0.5 rounded-md text-red-500 hover:bg-red-500/20" onClick={() => { setStartTime(""); setEndTime(""); }}>
+                            ล้างวันที่
+                          </Button>
+                        )}
+                      </div>
+                      <p className="mt-1.5 text-[10px] text-muted-foreground">
+                        {isHistorical
+                          ? "🕐 โหมด: ดึงย้อนหลัง — ใช้ช่วงเวลา เริ่มต้น–สิ้นสุด (จำนวนแท่งเทียนถูกปิด)"
+                          : `⚡ โหมด: เรียลไทม์ — ดึง ${limit} แท่งล่าสุด`}
+                      </p>
+                    </>
+                  );
+                })()}
               </div>
 
               {/* Step 4: ปุ่มดำเนินการ */}
@@ -1109,7 +1251,11 @@ export default function KlinesPage() {
                 <div>
                   <CardTitle>Batch: คู่ที่เลือก ({selectedPairs.length})</CardTitle>
                   <CardDescription>
-                    รวม weight โดยประมาณ: {selectedPairs.reduce((s, p) => s + klineWeight(p.limit), 0)} · ระบบจะรอ rate limit อัตโนมัติ
+                    {(() => {
+                      const rtWeight = selectedPairs.filter(p => p.mode === "realtime").reduce((s, p) => s + klineWeight(p.limit), 0);
+                      const histCount = selectedPairs.filter(p => p.mode === "historical").length;
+                      return `weight เรียลไทม์: ${rtWeight}${histCount > 0 ? ` · ย้อนหลัง ${histCount} คู่ (หลายครั้ง)` : ""} · ระบบจะรอ rate limit อัตโนมัติ`;
+                    })()}
                   </CardDescription>
                 </div>
                 <div className="flex items-center gap-2">
@@ -1140,9 +1286,13 @@ export default function KlinesPage() {
                 {selectedPairs.map(p => {
                   const k = comboKey(p.symbol, p.interval);
                   const loaded = loadedCombos.has(k);
+                  const modeLabel = p.mode === "historical"
+                    ? `🕐 ${fmtDateShort(p.startTime)} → ${fmtDateShort(p.endTime)}`
+                    : `⚡ ${p.limit} แท่ง`;
                   return (
                     <div
                       key={k}
+                      title={p.mode === "historical" ? `ย้อนหลัง: ${fmtDateShort(p.startTime)} → ${fmtDateShort(p.endTime)}` : `เรียลไทม์: ${p.limit} แท่งเทียน`}
                       className={`inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-[11px] ${loaded
                         ? "border-emerald-500/40 bg-emerald-500/10"
                         : "border-border bg-muted/40"
@@ -1152,7 +1302,9 @@ export default function KlinesPage() {
                       <span className="text-muted-foreground">·</span>
                       <span className="font-mono">{p.interval}</span>
                       <span className="text-muted-foreground">·</span>
-                      <span className="text-muted-foreground tabular-nums">{p.limit}</span>
+                      <span className={`text-[10px] ${p.mode === "historical" ? "text-sky-500" : "text-amber-500"}`}>
+                        {modeLabel}
+                      </span>
                       {loaded && <span className="text-emerald-500 text-[10px]">✓</span>}
                       <button
                         onClick={() => removePair(k)}
@@ -1229,6 +1381,11 @@ export default function KlinesPage() {
                       <div className="flex items-baseline justify-between gap-1 pr-3">
                         <span className="font-mono text-xs font-semibold truncate">{combo.symbol}</span>
                         <span className="font-mono text-[10px] text-muted-foreground">{combo.interval}</span>
+                      </div>
+                      <div className="text-[9px]">
+                        <span className={combo.mode === "historical" ? "text-sky-500" : "text-amber-500"}>
+                          {combo.mode === "historical" ? "🕐 ย้อนหลัง" : "⚡ เรียลไทม์"}
+                        </span>
                       </div>
                       <Sparkline klines={combo.klines} />
                       <div className="flex items-baseline justify-between text-[10px]">
