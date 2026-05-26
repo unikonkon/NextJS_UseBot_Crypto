@@ -66,7 +66,9 @@ export type StrategyId =
   | "auto_chart_patterns"
   | "diy_strategy_builder"
   | "rsi_divergence"
-  | "trend_strength";
+  | "trend_strength"
+  | "pasmc_scalper"
+  | "smc_trend_pullback";
 
 export interface StrategyConfig {
   id: StrategyId;
@@ -234,9 +236,9 @@ export const STRATEGIES: StrategyConfig[] = [
   {
     id: "price_action_smc",
     name: "Price Action SMC (BigBeluga)",
-    descriptionEn: "BOS/CHoCH + Order Blocks + Sweep — Buy on Bullish CHoCH, Sell on Bearish CHoCH",
-    descriptionTh: "BOS/CHoCH + Order Blocks + Sweep — ซื้อ เมื่อ CHoCH ขาขึ้น, ขาย เมื่อ CHoCH ขาลง",
-    params: { pasmcLen: 5, pasmcObLength: 5, pasmcBuildSweep: 1 },
+    descriptionEn: "Internal CHoCH filtered by swing trend + discount zone + OB/FVG confluence — Buy on Bullish CHoCH aligned with the dominant swing uptrend in discount with OB/FVG, Sell on Bearish CHoCH or swing-trend flip",
+    descriptionTh: "CHoCH ภายในกรองด้วย swing trend + โซน discount + OB/FVG — ซื้อ เมื่อ CHoCH ขาขึ้นตรงกับเทรนด์หลัก (swing) ในโซนส่วนลด พร้อม OB/FVG, ขาย เมื่อ CHoCH ขาลง หรือ swing trend พลิก",
+    params: { pasmcLen: 5, pasmcObLength: 5, pasmcBuildSweep: 1, pasmcSwing: 50, pasmcUseSwing: 1, pasmcUseOB: 1 },
   },
 
   {
@@ -281,6 +283,20 @@ export const STRATEGIES: StrategyConfig[] = [
     descriptionEn: "SMA ± Std Dev envelope — Buy when price breaks above the upper band (trend flips up), Sell when it breaks below the lower band",
     descriptionTh: "กรอบ SMA ± Std Dev — ซื้อ เมื่อราคาทะลุแถบบน (เทรนด์เปลี่ยนเป็นขาขึ้น), ขาย เมื่อราคาหลุดแถบล่าง",
     params: { tssPeriod: 20, tssMult: 2.5 },
+  },
+  {
+    id: "pasmc_scalper",
+    name: "PA-SMC Scalper (BigBeluga)",
+    descriptionEn: "Reversal scalper (30m/1h) — Buy on bullish Liquidity Sweep + reclaim / Order Block reaction / CHoCH. Exit on ATR TP/SL, bearish sweep/CHoCH, or OB invalidation",
+    descriptionTh: "สแกลป์สวนกลับ (30m/1h) — ซื้อ เมื่อเกิด Liquidity Sweep ขาขึ้น + reclaim / เด้งจาก Order Block / CHoCH ออก เมื่อชน ATR TP/SL, sweep/CHoCH ขาลง หรือหลุด OB",
+    params: { pascLen: 3, pascObLen: 3, pascSweep: 1, pascUseOB: 1, pascTpAtr: 3.0, pascSlAtr: 1.5 },
+  },
+  {
+    id: "smc_trend_pullback",
+    name: "SMC Trend Pullback (LuxAlgo)",
+    descriptionEn: "Trend-following pullback (30m/1h) — Buy on internal bullish break in discount zone with OB/FVG confluence while swing trend is up. Exit on ATR TP/SL, bearish CHoCH, swing-trend flip, or premium zone",
+    descriptionTh: "ตามเทรนด์เข้า pullback (30m/1h) — ซื้อ เมื่อ internal break ขาขึ้นในโซน discount + มี OB/FVG ยืนยัน ขณะ swing trend เป็นขาขึ้น ออก เมื่อชน ATR TP/SL, CHoCH ขาลง, swing trend พลิก หรือถึงโซน premium",
+    params: { smcpSwing: 20, smcpInternal: 5, smcpUseOB: 1, smcpUseFvg: 1, smcpTpAtr: 4.0, smcpSlAtr: 2.0 },
   },
 ];
 
@@ -523,6 +539,22 @@ function trendStrengthStrategy(_k: KlineData[], ind: AllIndicators): SignalActio
   });
 }
 
+function pasmcScalperStrategy(_k: KlineData[], ind: AllIndicators): SignalAction[] {
+  return ind.pasmcScalper.signal.map((sig) => {
+    if (sig === "BUY") return "BUY";
+    if (sig === "SELL") return "SELL";
+    return "HOLD";
+  });
+}
+
+function smcTrendPullbackStrategy(_k: KlineData[], ind: AllIndicators): SignalAction[] {
+  return ind.smcTrendPullback.signal.map((sig) => {
+    if (sig === "BUY") return "BUY";
+    if (sig === "SELL") return "SELL";
+    return "HOLD";
+  });
+}
+
 const STRATEGY_FNS: Record<StrategyId, SignalFn> = {
   rsi: rsiStrategy,
   cdc_actionzone: cdcActionZoneStrategy,
@@ -553,6 +585,8 @@ const STRATEGY_FNS: Record<StrategyId, SignalFn> = {
   diy_strategy_builder: diyStrategyBuilderStrategy,
   rsi_divergence: rsiDivergenceStrategy,
   trend_strength: trendStrengthStrategy,
+  pasmc_scalper: pasmcScalperStrategy,
+  smc_trend_pullback: smcTrendPullbackStrategy,
 };
 
 // ─── Backtest Engine ───────────────────────────────────────────
@@ -615,6 +649,9 @@ export function runBacktest(
     pasmcLen: strategyId === "price_action_smc" ? (params.pasmcLen ?? 5) : undefined,
     pasmcObLength: strategyId === "price_action_smc" ? (params.pasmcObLength ?? 5) : undefined,
     pasmcBuildSweep: strategyId === "price_action_smc" ? (params.pasmcBuildSweep ?? 1) : undefined,
+    pasmcSwing: strategyId === "price_action_smc" ? (params.pasmcSwing ?? 50) : undefined,
+    pasmcUseSwing: strategyId === "price_action_smc" ? (params.pasmcUseSwing ?? 1) : undefined,
+    pasmcUseOB: strategyId === "price_action_smc" ? (params.pasmcUseOB ?? 1) : undefined,
     pasrVolMaLength: strategyId === "price_action_sr" ? (params.pasrVolMaLength ?? 89) : undefined,
     pasrVolSpikeThresh: strategyId === "price_action_sr" ? (params.pasrVolSpikeThresh ?? 4.669) : undefined,
     pasrAtrLength: strategyId === "price_action_sr" ? (params.pasrAtrLength ?? 11) : undefined,
@@ -638,6 +675,18 @@ export function runBacktest(
     rsiDivTakeProfit: strategyId === "rsi_divergence" ? (params.rsiDivTakeProfit ?? 80) : undefined,
     tssPeriod: strategyId === "trend_strength" ? (params.tssPeriod ?? 20) : undefined,
     tssMult: strategyId === "trend_strength" ? (params.tssMult ?? 2.5) : undefined,
+    pascLen: strategyId === "pasmc_scalper" ? (params.pascLen ?? 3) : undefined,
+    pascObLen: strategyId === "pasmc_scalper" ? (params.pascObLen ?? 3) : undefined,
+    pascSweep: strategyId === "pasmc_scalper" ? (params.pascSweep ?? 1) : undefined,
+    pascUseOB: strategyId === "pasmc_scalper" ? (params.pascUseOB ?? 1) : undefined,
+    pascTpAtr: strategyId === "pasmc_scalper" ? (params.pascTpAtr ?? 3.0) : undefined,
+    pascSlAtr: strategyId === "pasmc_scalper" ? (params.pascSlAtr ?? 1.5) : undefined,
+    smcpSwing: strategyId === "smc_trend_pullback" ? (params.smcpSwing ?? 20) : undefined,
+    smcpInternal: strategyId === "smc_trend_pullback" ? (params.smcpInternal ?? 5) : undefined,
+    smcpUseOB: strategyId === "smc_trend_pullback" ? (params.smcpUseOB ?? 1) : undefined,
+    smcpUseFvg: strategyId === "smc_trend_pullback" ? (params.smcpUseFvg ?? 1) : undefined,
+    smcpTpAtr: strategyId === "smc_trend_pullback" ? (params.smcpTpAtr ?? 4.0) : undefined,
+    smcpSlAtr: strategyId === "smc_trend_pullback" ? (params.smcpSlAtr ?? 2.0) : undefined,
   });
   const signals = STRATEGY_FNS[strategyId](klines, indicators, params);
 

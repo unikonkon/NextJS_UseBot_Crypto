@@ -143,6 +143,8 @@ export default function KlineGraph({ klines, indicators: rawIndicators, btResult
   const [showAcp, setShowAcp] = useState(false);
   const [showRsiDiv, setShowRsiDiv] = useState(false);
   const [showTrendStrength, setShowTrendStrength] = useState(false);
+  const [showPasmcScalper, setShowPasmcScalper] = useState(false);
+  const [showSmcTrendPB, setShowSmcTrendPB] = useState(false);
   const [showRsiToggle, setShowRsiToggle] = useState(true);
   const [showMacdToggle, setShowMacdToggle] = useState(true);
   const [showSqzToggle, setShowSqzToggle] = useState(false);
@@ -176,6 +178,8 @@ export default function KlineGraph({ klines, indicators: rawIndicators, btResult
     setShowAcp(false);
     setShowRsiDiv(false);
     setShowTrendStrength(false);
+    setShowPasmcScalper(false);
+    setShowSmcTrendPB(false);
     // Reset panels
     setShowRsiToggle(false);
     setShowMacdToggle(false);
@@ -211,6 +215,8 @@ export default function KlineGraph({ klines, indicators: rawIndicators, btResult
       case "auto_chart_patterns": setShowAcp(true); break;
       case "rsi_divergence": setShowRsiDiv(true); break;
       case "trend_strength": setShowTrendStrength(true); break;
+      case "pasmc_scalper": setShowPasmcScalper(true); break;
+      case "smc_trend_pullback": setShowSmcTrendPB(true); break;
     }
   }, [strategyId]);
 
@@ -1469,6 +1475,100 @@ export default function KlineGraph({ klines, indicators: rawIndicators, btResult
           }
         }
       }
+
+      // PA-SMC Scalper overlay (structure lines + OB boxes + ATR TP/SL)
+      if (showPasmcScalper) {
+        const ps = indicators.pasmcScalper;
+        // Structure level lines (Sweep dashed, CHoCH bold, BOS solid)
+        for (const s of ps.structures) {
+          if (s.pivotIndex < 0 || s.index < 0 || s.pivotIndex >= klines.length || s.index >= klines.length) continue;
+          const t1 = times[s.pivotIndex];
+          const t2 = times[s.index];
+          if (!t1 || !t2 || t1 === t2) continue;
+          const isBull = s.bias === "bullish";
+          const color = s.type === "Sweep"
+            ? (isBull ? "rgba(132,204,22,0.6)" : "rgba(248,113,113,0.6)")
+            : (isBull ? "#10b981" : "#ef4444");
+          chart.addSeries(LineSeries, {
+            color,
+            lineWidth: s.type === "CHoCH" ? 2 : 1,
+            lineStyle: s.type === "BOS" ? 0 : 2,
+            priceLineVisible: false,
+            lastValueVisible: false,
+            crosshairMarkerVisible: false,
+          }).setData([{ time: t1, value: s.level }, { time: t2, value: s.level }]);
+        }
+        // Active order blocks (last 10)
+        for (const ob of ps.orderBlocks.filter(ob => !ob.mitigated).slice(-10)) {
+          const startTime = times[ob.startIndex];
+          const endTime = times[Math.min(ob.endIndex, klines.length - 1)];
+          if (!startTime || !endTime || startTime === endTime) continue;
+          const color = ob.bias === "bullish" ? "rgba(16,185,129,0.35)" : "rgba(239,68,68,0.35)";
+          for (const lvl of [ob.high, ob.low]) {
+            chart.addSeries(LineSeries, {
+              color, lineWidth: 1, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
+            }).setData([{ time: startTime, value: lvl }, { time: endTime, value: lvl }]);
+          }
+        }
+        // ATR Take-Profit / Stop-Loss lines (null = no open position → gap)
+        const tpData = ps.tp.map((v, i) => (v !== null ? { time: times[i], value: v } : { time: times[i] }));
+        const slData = ps.sl.map((v, i) => (v !== null ? { time: times[i], value: v } : { time: times[i] }));
+        chart.addSeries(LineSeries, {
+          color: "rgba(16,185,129,0.9)", lineWidth: 1, lineStyle: 2,
+          priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
+        }).setData(tpData as any);
+        chart.addSeries(LineSeries, {
+          color: "rgba(239,68,68,0.9)", lineWidth: 1, lineStyle: 2,
+          priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
+        }).setData(slData as any);
+      }
+
+      // SMC Trend Pullback overlay (swing/internal OB + FVG boxes + ATR TP/SL)
+      if (showSmcTrendPB) {
+        const sp = indicators.smcTrendPullback;
+        // Order blocks: internal (brighter) + swing (fainter), active only
+        const obSets: { obs: typeof sp.internalOrderBlocks; alpha: string }[] = [
+          { obs: sp.internalOrderBlocks, alpha: "0.30" },
+          { obs: sp.swingOrderBlocks, alpha: "0.16" },
+        ];
+        for (const set of obSets) {
+          for (const ob of set.obs.filter(o => !o.mitigated).slice(-8)) {
+            const startTime = times[ob.startIndex];
+            const endTime = times[klines.length - 1];
+            if (!startTime || !endTime || startTime === endTime) continue;
+            const color = ob.bias === "bullish" ? `rgba(16,185,129,${set.alpha})` : `rgba(239,68,68,${set.alpha})`;
+            for (const lvl of [ob.high, ob.low]) {
+              chart.addSeries(LineSeries, {
+                color, lineWidth: 1, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
+              }).setData([{ time: startTime, value: lvl }, { time: endTime, value: lvl }]);
+            }
+          }
+        }
+        // Unfilled Fair Value Gaps (last 8) — bullish cyan / bearish purple
+        for (const f of sp.fairValueGaps.filter(g => !g.filled).slice(-8)) {
+          if (f.index < 0 || f.index >= klines.length) continue;
+          const startTime = times[f.index];
+          const endTime = times[klines.length - 1];
+          if (!startTime || !endTime || startTime === endTime) continue;
+          const color = f.bias === "bullish" ? "rgba(34,211,238,0.28)" : "rgba(168,85,247,0.28)";
+          for (const lvl of [f.top, f.bottom]) {
+            chart.addSeries(LineSeries, {
+              color, lineWidth: 1, lineStyle: 1, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
+            }).setData([{ time: startTime, value: lvl }, { time: endTime, value: lvl }]);
+          }
+        }
+        // ATR Take-Profit / Stop-Loss lines
+        const tpData = sp.tp.map((v, i) => (v !== null ? { time: times[i], value: v } : { time: times[i] }));
+        const slData = sp.sl.map((v, i) => (v !== null ? { time: times[i], value: v } : { time: times[i] }));
+        chart.addSeries(LineSeries, {
+          color: "rgba(16,185,129,0.9)", lineWidth: 1, lineStyle: 2,
+          priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
+        }).setData(tpData as any);
+        chart.addSeries(LineSeries, {
+          color: "rgba(239,68,68,0.9)", lineWidth: 1, lineStyle: 2,
+          priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
+        }).setData(slData as any);
+      }
     }
 
     // ─── Backtest / signal-overlay markers on main chart ─────
@@ -1821,7 +1921,7 @@ export default function KlineGraph({ klines, indicators: rawIndicators, btResult
       sqzChartRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [klines, indicators, btResult, signalResult, strategyId, isDark, showVwap, showCdcEma, showSupertrendLine, showSmcOb, showSR, showTrendlines, showUtBot, showMsbOb, showChandelier, showTonyEma, showSuperTrendStrat, showTurtle, showScalpPB, showTrendlineBO, showSmcBO, showSRHV, showCdcV2, showZigzagPP, showPriceActionSMC, showPriceActionSR, showCandlestickP, showPivotHL, showTma, showAcp, showRsiDiv, showTrendStrength, showRsi, showMacd, showSqz]);
+  }, [klines, indicators, btResult, signalResult, strategyId, isDark, showVwap, showCdcEma, showSupertrendLine, showSmcOb, showSR, showTrendlines, showUtBot, showMsbOb, showChandelier, showTonyEma, showSuperTrendStrat, showTurtle, showScalpPB, showTrendlineBO, showSmcBO, showSRHV, showCdcV2, showZigzagPP, showPriceActionSMC, showPriceActionSR, showCandlestickP, showPivotHL, showTma, showAcp, showRsiDiv, showTrendStrength, showPasmcScalper, showSmcTrendPB, showRsi, showMacd, showSqz]);
 
   if (klines.length === 0) return null;
 
@@ -1893,6 +1993,8 @@ export default function KlineGraph({ klines, indicators: rawIndicators, btResult
           <OverlayToggle label="ACP" color="#10b981" secondColor="#ef4444" active={showAcp} onToggle={() => setShowAcp(v => !v)} />
           <OverlayToggle label="RSI Div" color="#10b981" secondColor="#a855f7" active={showRsiDiv} onToggle={() => setShowRsiDiv(v => !v)} />
           <OverlayToggle label="Trend Str" color="#00ffbb" secondColor="#ff1100" active={showTrendStrength} onToggle={() => setShowTrendStrength(v => !v)} />
+          <OverlayToggle label="PA-SMC Scalp" color="#10b981" secondColor="#ef4444" active={showPasmcScalper} onToggle={() => setShowPasmcScalper(v => !v)} />
+          <OverlayToggle label="SMC Pullback" color="#22d3ee" secondColor="#a855f7" active={showSmcTrendPB} onToggle={() => setShowSmcTrendPB(v => !v)} />
           <span className="text-[9px] text-muted-foreground/30 mx-0.5">|</span>
           <span className="text-[9px] font-medium text-muted-foreground/60 uppercase tracking-wider mr-1">Panel:</span>
           <OverlayToggle label="RSI" color="#a78bfa" active={showRsiToggle} onToggle={() => setShowRsiToggle(v => !v)} />
@@ -1927,6 +2029,8 @@ export default function KlineGraph({ klines, indicators: rawIndicators, btResult
               setShowAcp(false);
               setShowRsiDiv(false);
               setShowTrendStrength(false);
+              setShowPasmcScalper(false);
+              setShowSmcTrendPB(false);
               setShowRsiToggle(false);
               setShowMacdToggle(false);
               setShowSqzToggle(false);

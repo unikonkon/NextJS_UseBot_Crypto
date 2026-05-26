@@ -427,6 +427,8 @@ function LiveTradingContent() {
         diy_strategy_builder: ind.diyStrategyBuilder.signal,
         rsi_divergence: ind.rsiDivergence.signal,
         trend_strength: ind.trendStrength.signal,
+        pasmc_scalper: ind.pasmcScalper.signal,
+        smc_trend_pullback: ind.smcTrendPullback.signal,
       };
 
       const signals = strategyMap[strategyId];

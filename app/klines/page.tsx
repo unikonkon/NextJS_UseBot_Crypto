@@ -114,6 +114,9 @@ const PARAM_LABELS: Record<string, string> = {
   pasmcLen: "Pivot Length",
   pasmcObLength: "OB Length",
   pasmcBuildSweep: "Build Sweep (1/0)",
+  pasmcSwing: "Swing Size",
+  pasmcUseSwing: "Swing Filter (1/0)",
+  pasmcUseOB: "OB/FVG Confluence (1/0)",
   pasrVolMaLength: "Volume MA",
   pasrVolSpikeThresh: "Vol Spike ×",
   pasrAtrLength: "ATR Length",
@@ -137,6 +140,18 @@ const PARAM_LABELS: Record<string, string> = {
   rsiDivTakeProfit: "TP RSI Level",
   tssPeriod: "Period",
   tssMult: "Std Dev Mult",
+  pascLen: "Pivot Length",
+  pascObLen: "OB Length",
+  pascSweep: "Build Sweep (1/0)",
+  pascUseOB: "Use OB (1/0)",
+  pascTpAtr: "TP × ATR",
+  pascSlAtr: "SL × ATR",
+  smcpSwing: "Swing Size",
+  smcpInternal: "Internal Size",
+  smcpUseOB: "Use OB (1/0)",
+  smcpUseFvg: "Use FVG (1/0)",
+  smcpTpAtr: "TP × ATR",
+  smcpSlAtr: "SL × ATR",
 };
 
 // ─── Formatting ────────────────────────────────────────────────
@@ -2159,9 +2174,12 @@ export default function KlinesPage() {
                           )}
                           {strategyId === "price_action_smc" && (
                             <p className="text-[9px] text-muted-foreground/70">
-                              {key === "pasmcLen" && "Pivot Length (3-15) — leftBars และ rightBars สำหรับ pivot"}
+                              {key === "pasmcLen" && "Internal Pivot Length (3-15) — pivot ภายในสำหรับจับ CHoCH"}
                               {key === "pasmcObLength" && "OB Length (1-20) — กำหนดความสูงของ Order Block (อิง ATR)"}
                               {key === "pasmcBuildSweep" && "1 = ตรวจ Sweep (false break), 0 = ปิด"}
+                              {key === "pasmcSwing" && "Swing Size (20-100) — pivot ของเทรนด์หลัก + โซน premium/discount (ทำให้ค่านี้มีผลจริง)"}
+                              {key === "pasmcUseSwing" && "1 = เข้าเฉพาะตรงกับ swing trend + โซน discount, 0 = ปิดตัวกรอง"}
+                              {key === "pasmcUseOB" && "1 = ต้องมี OB/FVG ขาขึ้นถูกแตะก่อนเข้า, 0 = ปิด"}
                             </p>
                           )}
                           {strategyId === "price_action_sr" && (
@@ -2213,6 +2231,26 @@ export default function KlinesPage() {
                             <p className="text-[9px] text-muted-foreground/70">
                               {key === "tssPeriod" && "Period (10-50) — คาบของ SMA และ Std Dev ที่สร้างกรอบความผันผวน"}
                               {key === "tssMult" && "Std Dev Multiplier (1.0-4.0) — ระยะของแถบ Take Profit (upper1/lower1)"}
+                            </p>
+                          )}
+                          {strategyId === "pasmc_scalper" && (
+                            <p className="text-[9px] text-muted-foreground/70">
+                              {key === "pascLen" && "Pivot Length (2-8) — leftBars/rightBars ของ pivot (ค่าน้อย=ไวเหมาะ scalp)"}
+                              {key === "pascObLen" && "OB Length (1-10) — ความสูงของ Order Block (อิง ATR)"}
+                              {key === "pascSweep" && "1 = ใช้สัญญาณ Liquidity Sweep, 0 = ปิด"}
+                              {key === "pascUseOB" && "1 = เข้าจากการเด้งใน Order Block, 0 = ปิด"}
+                              {key === "pascTpAtr" && "Take Profit = entry + ค่านี้ × ATR(14) (เช่น 3.0)"}
+                              {key === "pascSlAtr" && "Stop Loss = entry − ค่านี้ × ATR(14) (เช่น 1.5 → R:R ≈ 2:1)"}
+                            </p>
+                          )}
+                          {strategyId === "smc_trend_pullback" && (
+                            <p className="text-[9px] text-muted-foreground/70">
+                              {key === "smcpSwing" && "Swing Size (10-50) — pivot ของเทรนด์หลัก (ตัวกรองทิศทาง)"}
+                              {key === "smcpInternal" && "Internal Size (3-10) — pivot ภายในสำหรับจังหวะเข้า pullback"}
+                              {key === "smcpUseOB" && "1 = ต้องการ confluence Order Block ขาขึ้น, 0 = ปิด"}
+                              {key === "smcpUseFvg" && "1 = ต้องการ confluence Fair Value Gap ขาขึ้น, 0 = ปิด"}
+                              {key === "smcpTpAtr" && "Take Profit = entry + ค่านี้ × ATR(14) (เช่น 4.0)"}
+                              {key === "smcpSlAtr" && "Stop Loss = entry − ค่านี้ × ATR(14) (เช่น 2.0 → R:R ≈ 2:1)"}
                             </p>
                           )}
                         </div>
@@ -2852,15 +2890,16 @@ export default function KlinesPage() {
                   <div className="rounded-md border border-border/50 bg-muted/30 px-3 py-2.5 space-y-2">
                     <p className="text-[11px] font-medium text-foreground/90">Price Action SMC (BigBeluga) คืออะไร?</p>
                     <p className="text-[10px] text-muted-foreground leading-relaxed">
-                      Smart Money Concepts โดย BigBeluga — ตรวจ pivot ด้วย mslen แล้วบันทึก BOS/CHoCH
-                      สร้าง Order Block จากแท่งฝั่งตรงข้ามก่อนเกิด break ส่วน Sweep ตรวจจับ false break (ทะลุแต่ปิดกลับ)
+                      Smart Money Concepts โดย BigBeluga — ตรวจ pivot ภายในด้วย mslen เพื่อจับ BOS/CHoCH + สร้าง Order Block/Sweep
+                      จากนั้น <span className="text-foreground/80">กรองสัญญาณด้วยโครงสร้าง swing (Swing Size)</span>: เข้าเฉพาะ CHoCH ที่ตรงกับเทรนด์หลัก
+                      อยู่ในโซน <span className="text-emerald-500/80">discount</span> และมี OB/FVG ขาขึ้นยืนยัน — จึงทำให้ Swing Size มีผลจริง และต่างจาก SMC (LuxAlgo)
                     </p>
                     <div className="flex flex-wrap gap-x-4 gap-y-1 text-[10px]">
-                      <span className="text-emerald-500">BUY → Bullish CHoCH (เปลี่ยนเทรนด์เป็นขาขึ้น)</span>
-                      <span className="text-red-500">SELL → Bearish CHoCH (เปลี่ยนเทรนด์เป็นขาลง)</span>
+                      <span className="text-emerald-500">BUY → Bullish CHoCH + swing trend ขึ้น + โซน discount + OB/FVG</span>
+                      <span className="text-red-500">SELL → Bearish CHoCH หรือ swing trend พลิกเป็นขาลง</span>
                     </div>
                     <div className="text-[10px] text-muted-foreground">
-                      BOS = ยืนยันเทรนด์เดิม, CHoCH = เปลี่ยนเทรนด์, Sweep = false break (ดูดทุน stop loss)
+                      Swing Filter (1/0) เปิด/ปิดตัวกรองเทรนด์+โซน, OB/FVG Confluence (1/0) บังคับให้ราคาแตะ OB หรือ FVG ก่อนเข้า — ปิดทั้งคู่จะกลับไปเป็น CHoCH ล้วน
                     </div>
                   </div>
                 )}
@@ -2979,6 +3018,42 @@ export default function KlinesPage() {
                     </div>
                     <p className="text-[10px] text-muted-foreground leading-relaxed">
                       เป็นกลยุทธ์ฝั่ง Long อย่างเดียว — เข้าเมื่อเกิด Bullish Divergence และปิดเมื่อ RSI ถึงเป้ากำไร (TP Level) หรือเกิด Bearish Divergence
+                    </p>
+                  </div>
+                )}
+
+                {strategyId === "pasmc_scalper" && (
+                  <div className="rounded-md border border-border/50 bg-muted/30 px-3 py-2.5 space-y-2">
+                    <p className="text-[11px] font-medium text-foreground/90">PA-SMC Scalper (BigBeluga) คืออะไร?</p>
+                    <p className="text-[10px] text-muted-foreground leading-relaxed">
+                      กลยุทธ์สแกลป์ <span className="text-foreground/80">สวนกลับ (reversal)</span> สำหรับ TF สั้น 30m/1h — จับจังหวะเงินใหญ่
+                      ลากกิน liquidity (Sweep ไส้เทียนทะลุ high/low เดิมแล้วดึงกลับ) และการเด้งจากโซน Order Block
+                      ต่างจาก SMC เดิมที่ใช้แค่ CHoCH ตัวนี้รวมทั้ง <span className="text-foreground/80">Sweep + OB + CHoCH</span>
+                    </p>
+                    <div className="flex flex-wrap gap-x-4 gap-y-1 text-[10px]">
+                      <span className="text-emerald-500">BUY → Bullish Sweep+reclaim / เด้งจาก Bullish OB / Bullish CHoCH</span>
+                      <span className="text-red-500">SELL → ชน ATR TP/SL, Bearish Sweep/CHoCH, หรือหลุด OB (invalidation)</span>
+                    </div>
+                    <p className="text-[10px] text-muted-foreground leading-relaxed">
+                      มี ATR TP/SL อัตโนมัติ: TP = entry + (TP×ATR), SL = entry − (SL×ATR) — ค่าเริ่มต้น R:R ≈ 2:1 (TP 3.0 / SL 1.5)
+                    </p>
+                  </div>
+                )}
+
+                {strategyId === "smc_trend_pullback" && (
+                  <div className="rounded-md border border-border/50 bg-muted/30 px-3 py-2.5 space-y-2">
+                    <p className="text-[11px] font-medium text-foreground/90">SMC Trend Pullback (LuxAlgo) คืออะไร?</p>
+                    <p className="text-[10px] text-muted-foreground leading-relaxed">
+                      กลยุทธ์ <span className="text-foreground/80">ตามเทรนด์ (continuation)</span> สำหรับ TF สั้น 30m/1h — ใช้ swing structure (Swing Size)
+                      กำหนดทิศหลัก แล้วเข้า pullback เฉพาะตอน internal break ขาขึ้น<span className="text-foreground/80">ในโซนส่วนลด (discount)</span> ที่มี Order Block / Fair Value Gap ยืนยัน
+                      จุดนี้ทำให้ Swing Size มีผลจริง (ต่างจาก SMC เดิม)
+                    </p>
+                    <div className="flex flex-wrap gap-x-4 gap-y-1 text-[10px]">
+                      <span className="text-emerald-500">BUY → internal break ขาขึ้น + swing trend ขึ้น + โซน discount + OB/FVG</span>
+                      <span className="text-red-500">SELL → ชน ATR TP/SL, Bearish CHoCH, swing trend พลิก, หรือถึงโซน premium</span>
+                    </div>
+                    <p className="text-[10px] text-muted-foreground leading-relaxed">
+                      มี ATR TP/SL อัตโนมัติ: TP = entry + (TP×ATR), SL = entry − (SL×ATR) — ค่าเริ่มต้น TP 4.0 / SL 2.0 (ถือยาวกว่าตัว Scalper)
                     </p>
                   </div>
                 )}

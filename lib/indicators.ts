@@ -2534,6 +2534,8 @@ export interface PASMCOrderBlock {
 
 export interface PriceActionSMCResult {
   trend: (SMCBias | null)[];
+  swingTrend: (SMCBias | null)[];                                   // dominant trend from swingLen pivots
+  premiumDiscount: ("premium" | "discount" | "equilibrium" | null)[];
   structures: PASMCStructure[];
   orderBlocks: PASMCOrderBlock[];
   swingPoints: SMCSwingPoint[];
@@ -2546,6 +2548,9 @@ export function priceActionSMC(
   obLengthMode: "Length" | "Full" = "Length",
   obLength = 5,
   buildSweep = true,
+  swingLen = 50,
+  useSwingFilter = true,
+  useOBConfluence = true,
 ): PriceActionSMCResult {
   const c = closes(klines);
   const h = highs(klines);
@@ -2555,6 +2560,15 @@ export function priceActionSMC(
   const len = klines.length;
 
   const atrArr = atr(klines, 200);
+
+  // Swing-level structure (bigger pivots) — dominant trend + premium/discount
+  // zone + fair-value gaps. This is what makes swingLen actually affect the
+  // signals (internal CHoCH alone ignores it → identical to plain SMC).
+  const swingPivots = detectPivots(h, l, swingLen);
+  const swingTrend = detectStructure(c, h, l, swingPivots.pivotHighs, swingPivots.pivotLows).trend;
+  const premiumDiscount = detectPremiumDiscount(c, h, l, swingPivots.pivotHighs, swingPivots.pivotLows);
+  const fvgs = detectFairValueGaps(h, l, c, o, atrArr);
+  const confWindow = Math.max(5, mslen * 2);
 
   // Pivots
   const pivotHighs: (number | null)[] = new Array(len).fill(null);
@@ -2642,6 +2656,26 @@ export function priceActionSMC(
     }
   };
 
+  // price tapped a bullish OB or unfilled bullish FVG within the confluence window
+  const tappedBullishZone = (i: number): boolean => {
+    const winStart = Math.max(0, i - confWindow);
+    for (const ob of orderBlocks) {
+      if (ob.bias !== "bullish" || ob.startIndex > i) continue;
+      if (ob.mitigatedIndex !== null && winStart >= ob.mitigatedIndex) continue;
+      for (let k = Math.max(winStart, ob.startIndex + 1); k <= i; k++) {
+        if (l[k] <= ob.high && h[k] >= ob.low) return true;
+      }
+    }
+    for (const f of fvgs) {
+      if (f.bias !== "bullish" || f.index >= i) continue;
+      if (f.filledIndex !== null && winStart >= f.filledIndex) continue;
+      for (let k = winStart; k <= i; k++) {
+        if (l[k] <= f.top && h[k] >= f.bottom) return true;
+      }
+    }
+    return false;
+  };
+
   for (let i = 0; i < len; i++) {
     if (pivotHighs[i] !== null) lastPH = { price: pivotHighs[i]!, index: i, crossed: false };
     if (pivotLows[i] !== null) lastPL = { price: pivotLows[i]!, index: i, crossed: false };
@@ -2661,7 +2695,15 @@ export function priceActionSMC(
       const t: PASMCEvent = curTrend === "bearish" ? "CHoCH" : "BOS";
       structures.push({ index: i, type: t, bias: "bullish", level: lastPH.price, pivotIndex: lastPH.index });
       addOB(lastPH.index, "bullish");
-      if (t === "CHoCH") signal[i] = "BUY";
+      // BUY on bullish CHoCH that aligns with the dominant swing trend, sits in
+      // the discount zone, and has OB/FVG confluence (filters make swingLen matter)
+      if (t === "CHoCH") {
+        const zone = premiumDiscount[i];
+        const swingOK = !useSwingFilter || swingTrend[i] === "bullish";
+        const zoneOK = !useSwingFilter || zone === "discount" || zone === "equilibrium";
+        const confOK = !useOBConfluence || tappedBullishZone(i);
+        if (swingOK && zoneOK && confOK) signal[i] = "BUY";
+      }
       lastPH.crossed = true;
       curTrend = "bullish";
     }
@@ -2673,6 +2715,12 @@ export function priceActionSMC(
       if (t === "CHoCH") signal[i] = "SELL";
       lastPL.crossed = true;
       curTrend = "bearish";
+    }
+
+    // Exit longs when the dominant swing trend flips bearish
+    if (useSwingFilter && signal[i] === null && i > 0
+        && swingTrend[i] === "bearish" && swingTrend[i - 1] !== "bearish") {
+      signal[i] = "SELL";
     }
 
     trend[i] = curTrend;
@@ -2692,7 +2740,7 @@ export function priceActionSMC(
     }
   }
 
-  return { trend, structures, orderBlocks, swingPoints, signal };
+  return { trend, swingTrend, premiumDiscount, structures, orderBlocks, swingPoints, signal };
 }
 
 // ─── Price Action - Support & Resistance (DGT) ─────────────────
@@ -3617,6 +3665,224 @@ export function diyStrategyBuilder(
 }
 
 // ─── Compute all indicators for klines ─────────────────────────
+// ─── Price Action SMC Scalper (BigBeluga) — reversal ───────────
+// Short-term reversal play on the BigBeluga structure engine. Enters
+// long on a bullish liquidity sweep + reclaim, a bullish CHoCH, or a
+// reaction off an active bullish order block. Exits on ATR take-profit /
+// stop-loss, a bearish sweep/CHoCH, or order-block invalidation.
+// Reuses priceActionSMC() for structure/OB detection — only the signal
+// logic is new, so the original strategy is left untouched.
+export interface PASMCScalperResult {
+  trend: (SMCBias | null)[];
+  structures: PASMCStructure[];
+  orderBlocks: PASMCOrderBlock[];
+  swingPoints: SMCSwingPoint[];
+  tp: (number | null)[];   // active take-profit level while in a position
+  sl: (number | null)[];   // active stop-loss level while in a position
+  signal: ("BUY" | "SELL" | null)[];
+}
+
+export function priceActionSMCScalper(
+  klines: KlineData[],
+  mslen = 3,
+  obLength = 3,
+  buildSweep = true,
+  useOB = true,
+  atrTpMult = 3.0,
+  atrSlMult = 1.5,
+  atrLen = 14,
+): PASMCScalperResult {
+  const base = priceActionSMC(klines, mslen, "Length", obLength, buildSweep);
+  const c = closes(klines);
+  const h = highs(klines);
+  const l = lows(klines);
+  const len = klines.length;
+  const atrArr = atr(klines, atrLen);
+
+  // Map reversal structure events to bars (BOS = continuation → skipped)
+  const bullEntry = new Array<boolean>(len).fill(false);  // bullish sweep / CHoCH
+  const bearExit = new Array<boolean>(len).fill(false);   // bearish sweep / CHoCH
+  for (const s of base.structures) {
+    if (s.type === "BOS") continue;
+    if (s.bias === "bullish") bullEntry[s.index] = true;
+    else bearExit[s.index] = true;
+  }
+
+  const signal: ("BUY" | "SELL" | null)[] = new Array(len).fill(null);
+  const tp = new Array<number | null>(len).fill(null);
+  const sl = new Array<number | null>(len).fill(null);
+
+  let inPos = false;
+  let tpLevel = 0;
+  let slLevel = 0;
+  let entryOB: PASMCOrderBlock | null = null;
+
+  for (let i = 0; i < len; i++) {
+    const a = atrArr[i];
+    if (!inPos) {
+      // Bullish OB reaction: tap an active bullish OB and close above its mid
+      let reactOB: PASMCOrderBlock | null = null;
+      if (useOB) {
+        for (const ob of base.orderBlocks) {
+          if (ob.bias !== "bullish" || ob.startIndex >= i) continue;
+          if (ob.mitigatedIndex !== null && i >= ob.mitigatedIndex) continue;
+          if (l[i] <= ob.high && l[i] >= ob.low && c[i] > ob.mid) { reactOB = ob; break; }
+        }
+      }
+      if (a !== null && (bullEntry[i] || reactOB)) {
+        inPos = true;
+        tpLevel = c[i] + atrTpMult * a;
+        slLevel = c[i] - atrSlMult * a;
+        entryOB = reactOB;
+        signal[i] = "BUY";
+      }
+    } else {
+      const slHit = l[i] <= slLevel;
+      const tpHit = h[i] >= tpLevel;
+      const obInvalid = entryOB !== null && c[i] < entryOB.low;
+      if (slHit || tpHit || bearExit[i] || obInvalid) {
+        signal[i] = "SELL";
+        inPos = false;
+        entryOB = null;
+      }
+    }
+    if (inPos) { tp[i] = tpLevel; sl[i] = slLevel; }
+  }
+
+  return {
+    trend: base.trend,
+    structures: base.structures,
+    orderBlocks: base.orderBlocks,
+    swingPoints: base.swingPoints,
+    tp,
+    sl,
+    signal,
+  };
+}
+
+// ─── SMC Trend Pullback (LuxAlgo) — trend-following ────────────
+// Uses the swing structure as the dominant-trend filter, then enters
+// long only on an internal bullish break inside the discount zone with
+// order-block / fair-value-gap confluence. Exits on ATR take-profit /
+// stop-loss, an internal bearish CHoCH, a swing-trend flip, or price
+// reaching the premium zone. Reuses smartMoneyConcepts() for detection —
+// only the signal logic is new, so the original strategy is untouched.
+export interface SMCTrendPullbackResult {
+  swingTrend: (SMCBias | null)[];
+  internalTrend: (SMCBias | null)[];
+  swingStructures: SMCStructureBreak[];
+  internalStructures: SMCStructureBreak[];
+  swingOrderBlocks: SMCOrderBlock[];
+  internalOrderBlocks: SMCOrderBlock[];
+  fairValueGaps: SMCFairValueGap[];
+  swingPoints: SMCSwingPoint[];
+  premiumDiscount: ("premium" | "discount" | "equilibrium" | null)[];
+  tp: (number | null)[];
+  sl: (number | null)[];
+  signal: ("BUY" | "SELL" | null)[];
+}
+
+export function smcTrendPullback(
+  klines: KlineData[],
+  swingSize = 20,
+  internalSize = 5,
+  useOB = true,
+  useFvg = true,
+  atrTpMult = 4.0,
+  atrSlMult = 2.0,
+  atrLen = 14,
+): SMCTrendPullbackResult {
+  const base = smartMoneyConcepts(klines, swingSize, internalSize);
+  const c = closes(klines);
+  const h = highs(klines);
+  const l = lows(klines);
+  const len = klines.length;
+  const atrArr = atr(klines, atrLen);
+
+  // internal break events
+  const bullBreak = new Array<boolean>(len).fill(false);  // bullish CHoCH or BOS
+  const bearCHoCH = new Array<boolean>(len).fill(false);
+  for (const s of base.internalStructures) {
+    if (s.bias === "bullish") bullBreak[s.index] = true;
+    else if (s.type === "CHoCH") bearCHoCH[s.index] = true;
+  }
+
+  const confWindow = Math.max(3, internalSize);
+  // price overlapped an active bullish OB within the confluence window
+  const tappedBullOB = (i: number): boolean => {
+    for (const ob of base.internalOrderBlocks) {
+      if (ob.bias !== "bullish" || ob.startIndex >= i) continue;
+      if (ob.mitigatedIndex !== null && i >= ob.mitigatedIndex) continue;
+      for (let k = Math.max(0, i - confWindow); k <= i; k++) {
+        if (l[k] <= ob.high && h[k] >= ob.low) return true;
+      }
+    }
+    return false;
+  };
+  // price overlapped an unfilled bullish FVG within the window
+  const tappedBullFVG = (i: number): boolean => {
+    for (const f of base.fairValueGaps) {
+      if (f.bias !== "bullish" || f.index >= i) continue;
+      if (f.filledIndex !== null && i >= f.filledIndex) continue;
+      for (let k = Math.max(0, i - confWindow); k <= i; k++) {
+        if (l[k] <= f.top && h[k] >= f.bottom) return true;
+      }
+    }
+    return false;
+  };
+
+  const signal: ("BUY" | "SELL" | null)[] = new Array(len).fill(null);
+  const tp = new Array<number | null>(len).fill(null);
+  const sl = new Array<number | null>(len).fill(null);
+
+  let inPos = false;
+  let tpLevel = 0;
+  let slLevel = 0;
+
+  for (let i = 0; i < len; i++) {
+    const a = atrArr[i];
+    if (!inPos) {
+      const trendOK = base.swingTrend[i] === "bullish";
+      const zone = base.premiumDiscount[i];
+      const zoneOK = zone === "discount" || zone === "equilibrium";
+      const confluence = (!useOB && !useFvg)
+        ? true
+        : ((useOB && tappedBullOB(i)) || (useFvg && tappedBullFVG(i)));
+      if (a !== null && bullBreak[i] && trendOK && zoneOK && confluence) {
+        inPos = true;
+        tpLevel = c[i] + atrTpMult * a;
+        slLevel = c[i] - atrSlMult * a;
+        signal[i] = "BUY";
+      }
+    } else {
+      const slHit = l[i] <= slLevel;
+      const tpHit = h[i] >= tpLevel;
+      const trendFlip = base.swingTrend[i] === "bearish";
+      const premium = base.premiumDiscount[i] === "premium";
+      if (slHit || tpHit || bearCHoCH[i] || trendFlip || premium) {
+        signal[i] = "SELL";
+        inPos = false;
+      }
+    }
+    if (inPos) { tp[i] = tpLevel; sl[i] = slLevel; }
+  }
+
+  return {
+    swingTrend: base.swingTrend,
+    internalTrend: base.internalTrend,
+    swingStructures: base.swingStructures,
+    internalStructures: base.internalStructures,
+    swingOrderBlocks: base.swingOrderBlocks,
+    internalOrderBlocks: base.internalOrderBlocks,
+    fairValueGaps: base.fairValueGaps,
+    swingPoints: base.swingPoints,
+    premiumDiscount: base.premiumDiscount,
+    tp,
+    sl,
+    signal,
+  };
+}
+
 // ─── RSI Divergence Indicator ──────────────────────────────────
 // RSI oscillator + pivot-based divergence detection (regular & hidden,
 // bullish & bearish). Long-only like the source strategy: BUY on bullish
@@ -3856,6 +4122,8 @@ export interface AllIndicators {
   diyStrategyBuilder: DIYBuilderResult;
   rsiDivergence: RSIDivergenceResult;
   trendStrength: TrendStrengthResult;
+  pasmcScalper: PASMCScalperResult;
+  smcTrendPullback: SMCTrendPullbackResult;
 }
 
 export function computeAll(klines: KlineData[], overrides?: {
@@ -3914,6 +4182,9 @@ export function computeAll(klines: KlineData[], overrides?: {
   pasmcObMode?: number;       // 0 = Length, 1 = Full
   pasmcObLength?: number;
   pasmcBuildSweep?: number;
+  pasmcSwing?: number;        // swing-structure pivot length (dominant trend filter)
+  pasmcUseSwing?: number;     // 0/1 — gate by swing trend + discount/premium zone
+  pasmcUseOB?: number;        // 0/1 — require OB/FVG confluence on entry
   pasrVolMaLength?: number;
   pasrVolSpikeThresh?: number;
   pasrAtrLength?: number;
@@ -3939,6 +4210,18 @@ export function computeAll(klines: KlineData[], overrides?: {
   rsiDivTakeProfit?: number;
   tssPeriod?: number;
   tssMult?: number;
+  pascLen?: number;
+  pascObLen?: number;
+  pascSweep?: number;     // 0/1
+  pascUseOB?: number;     // 0/1
+  pascTpAtr?: number;
+  pascSlAtr?: number;
+  smcpSwing?: number;
+  smcpInternal?: number;
+  smcpUseOB?: number;     // 0/1
+  smcpUseFvg?: number;    // 0/1
+  smcpTpAtr?: number;
+  smcpSlAtr?: number;
 }): AllIndicators {
   const c = closes(klines);
   return {
@@ -3965,7 +4248,7 @@ export function computeAll(klines: KlineData[], overrides?: {
     srHighVolume: srHighVolumeBoxes(klines, overrides?.srhvLookback ?? 20, overrides?.srhvVolLen ?? 2, overrides?.srhvBoxWidth ?? 1.0),
     cdcActionZoneV2: cdcActionZoneV2(klines, overrides?.cdcV2Fast ?? 12, overrides?.cdcV2Slow ?? 26),
     zigzagPlusPlus: zigzagPlusPlus(klines, overrides?.zzDepth ?? 12, overrides?.zzDeviation ?? 5, overrides?.zzBackstep ?? 2),
-    priceActionSMC: priceActionSMC(klines, overrides?.pasmcLen ?? 5, (overrides?.pasmcObMode ?? 0) === 1 ? "Full" : "Length", overrides?.pasmcObLength ?? 5, (overrides?.pasmcBuildSweep ?? 1) !== 0),
+    priceActionSMC: priceActionSMC(klines, overrides?.pasmcLen ?? 5, (overrides?.pasmcObMode ?? 0) === 1 ? "Full" : "Length", overrides?.pasmcObLength ?? 5, (overrides?.pasmcBuildSweep ?? 1) !== 0, overrides?.pasmcSwing ?? 50, (overrides?.pasmcUseSwing ?? 1) !== 0, (overrides?.pasmcUseOB ?? 1) !== 0),
     priceActionSR: priceActionSR(klines, overrides?.pasrVolMaLength ?? 89, overrides?.pasrVolSpikeThresh ?? 4.669, overrides?.pasrAtrLength ?? 11, overrides?.pasrAtrMult ?? 2.718, (overrides?.pasrUseVolume ?? 1) !== 0),
     candlestickPatterns: candlestickPatterns(klines, overrides?.cpTrendBars ?? 5, overrides?.cpDojiSize ?? 0.05),
     pivotPointsHL: pivotPointsHL(klines, overrides?.pphlLength ?? 50),
@@ -3997,5 +4280,7 @@ export function computeAll(klines: KlineData[], overrides?: {
     })(),
     rsiDivergence: rsiDivergence(klines, overrides?.rsiDivPeriod ?? 9, overrides?.rsiDivLbL ?? 1, overrides?.rsiDivLbR ?? 3, overrides?.rsiDivTakeProfit ?? 80),
     trendStrength: trendStrengthSignals(klines, overrides?.tssPeriod ?? 20, overrides?.tssMult ?? 2.5),
+    pasmcScalper: priceActionSMCScalper(klines, overrides?.pascLen ?? 3, overrides?.pascObLen ?? 3, (overrides?.pascSweep ?? 1) !== 0, (overrides?.pascUseOB ?? 1) !== 0, overrides?.pascTpAtr ?? 3.0, overrides?.pascSlAtr ?? 1.5),
+    smcTrendPullback: smcTrendPullback(klines, overrides?.smcpSwing ?? 20, overrides?.smcpInternal ?? 5, (overrides?.smcpUseOB ?? 1) !== 0, (overrides?.smcpUseFvg ?? 1) !== 0, overrides?.smcpTpAtr ?? 4.0, overrides?.smcpSlAtr ?? 2.0),
   };
 }
