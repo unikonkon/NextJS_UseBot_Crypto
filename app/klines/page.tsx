@@ -530,6 +530,7 @@ export default function KlinesPage() {
   const [multiBtRunning, setMultiBtRunning] = useState(false);
   const [multiBtExpanded, setMultiBtExpanded] = useState<Set<string>>(new Set());
   const [multiBtSort, setMultiBtSort] = useState<"pnl" | "strategy" | "combo">("pnl");
+  const [multiBtCollapsed, setMultiBtCollapsed] = useState(false);
 
   const activeSymbol = customSymbol.trim().toUpperCase() || symbol;
 
@@ -1589,6 +1590,17 @@ export default function KlinesPage() {
                   </CardDescription>
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
+                  {multiBtResults && multiBtResults.length > 0 && (
+                    <Button
+                      onClick={() => setMultiBtCollapsed(v => !v)}
+                      variant="outline"
+                      className="h-9"
+                    >
+                      {multiBtCollapsed
+                        ? `▼ ขยายตาราง (${multiBtResults.length})`
+                        : "▲ ย่อตาราง"}
+                    </Button>
+                  )}
                   {csvFiles.length > 0 && (
                     <Button
                       onClick={importAllSavedFiles}
@@ -1625,6 +1637,8 @@ export default function KlinesPage() {
               )}
               {multiBtResults && multiBtResults.length > 0 && (
                 <div className="space-y-2">
+                  {!multiBtCollapsed && (
+                  <>
                   {/* Filter / จัดกลุ่ม */}
                   <div className="flex items-center gap-1.5 flex-wrap">
                     <span className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground mr-1">
@@ -1762,6 +1776,8 @@ export default function KlinesPage() {
                       </TableBody>
                     </Table>
                   </div>
+                  </>
+                  )}
                   {multiBtResults.length >= 2 && (
                     <div className="flex gap-3">
                       <Card size="sm" className="flex-1 ring-emerald-500/20">
