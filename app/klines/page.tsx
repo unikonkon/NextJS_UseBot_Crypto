@@ -14,6 +14,8 @@ import {
   type StrategyId,
   type BacktestResult,
   type Trade,
+  type SizingMode,
+  type SizingConfig,
 } from "@/lib/backtest";
 import { Card, CardHeader, CardTitle, CardDescription, CardContent, CardAction } from "@/components/ui/card";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem, SelectGroup, SelectLabel } from "@/components/ui/select";
@@ -492,6 +494,21 @@ export default function KlinesPage() {
     () => ({ ...STRATEGIES.find(s => s.id === "rsi")!.params })
   );
   const [feesPct, setFeesPct] = useState("0.1");
+  // ── Position sizing (เงินจริง, Spot 1x) — เลือกโหมดคิดขนาดการลงทุนต่อไม้ ──
+  const [sizingMode, setSizingMode] = useState<SizingMode>("all_in");
+  const [initialCapital, setInitialCapital] = useState("1000"); // ทุนเริ่มต้น USDT
+  const [fixedAmount, setFixedAmount] = useState("100");        // mode fixed: USDT/ไม้
+  const [pctOfCapital, setPctOfCapital] = useState("10");       // mode pct: % ของทุน/ไม้
+  const [riskPct, setRiskPct] = useState("2");                  // mode risk: % เสี่ยง/ไม้
+  const [stopLossPct, setStopLossPct] = useState("2");          // mode risk: ระยะ SL %
+  const sizing = useMemo<SizingConfig>(() => ({
+    mode: sizingMode,
+    initialCapital: parseFloat(initialCapital) || 1000,
+    fixedAmount: parseFloat(fixedAmount) || 100,
+    pctOfCapital: parseFloat(pctOfCapital) || 10,
+    riskPct: parseFloat(riskPct) || 2,
+    stopLossPct: parseFloat(stopLossPct) || 2,
+  }), [sizingMode, initialCapital, fixedAmount, pctOfCapital, riskPct, stopLossPct]);
   const [btResult, setBtResult] = useState<BacktestResult | null>(null);
   const [btRunning, setBtRunning] = useState(false);
   const [allBtResults, setAllBtResults] = useState<{ strategyId: StrategyId; name: string; result: BacktestResult }[] | null>(null);
@@ -863,7 +880,7 @@ export default function KlinesPage() {
         for (const combo of loadedCombos.values()) {
           if (combo.klines.length < 50) continue;
           for (const strat of STRATEGIES) {
-            const result = runBacktest(combo.klines, strat.id, { ...strat.params }, fees);
+            const result = runBacktest(combo.klines, strat.id, { ...strat.params }, fees, sizing);
             rows.push({
               strategyId: strat.id,
               strategyName: strat.name,
@@ -883,7 +900,7 @@ export default function KlinesPage() {
         setMultiBtRunning(false);
       }
     }, 10);
-  }, [loadedCombos, feesPct]);
+  }, [loadedCombos, feesPct, sizing]);
 
   // ─── Fetch Real-time (รองรับ > 1000 ผ่าน paginate) ──────────
   const fetchRealtime = useCallback(async () => {
@@ -1037,12 +1054,12 @@ export default function KlinesPage() {
     setError(null);
     setTimeout(() => {
       try {
-        const result = runBacktest(klines, strategyId, strategyParams, parseFloat(feesPct) || 0.1);
+        const result = runBacktest(klines, strategyId, strategyParams, parseFloat(feesPct) || 0.1, sizing);
         setBtResult(result);
       } catch (err) { setError(String(err)); }
       finally { setBtRunning(false); }
     }, 10);
-  }, [klines, strategyId, strategyParams, feesPct]);
+  }, [klines, strategyId, strategyParams, feesPct, sizing]);
 
   // ─── Run All Backtests ─────────────────────────────────────
   const runAllBt = useCallback(() => {
@@ -1056,7 +1073,7 @@ export default function KlinesPage() {
         const results = STRATEGIES.map(s => ({
           strategyId: s.id,
           name: s.name,
-          result: runBacktest(klines, s.id, { ...s.params }, fees),
+          result: runBacktest(klines, s.id, { ...s.params }, fees, sizing),
         }));
         results.sort((a, b) => b.result.totalPnlPct - a.result.totalPnlPct);
         setAllBtResults(results);
@@ -1064,7 +1081,7 @@ export default function KlinesPage() {
       } catch (err) { setError(String(err)); }
       finally { setAllBtRunning(false); }
     }, 10);
-  }, [klines, feesPct]);
+  }, [klines, feesPct, sizing]);
 
   // ─── Reset ค่าตั้งค่า & ดึงข้อมูล ทั้งหมด (กลับค่าเริ่มต้น) ──────
   const resetConfig = useCallback(() => {
@@ -1576,6 +1593,75 @@ export default function KlinesPage() {
           );
         })()}
 
+        {/* ═══ ขั้นตอน: ตั้งค่าการลงทุน (ใช้ร่วมกับทุกการทดสอบย้อนหลัง) ═══ */}
+        {(klines.length > 0 || loadedCombos.size > 0 || csvFiles.length > 0) && (
+          <Card size="sm" className="ring-1 ring-primary/15">
+            <CardHeader className="border-b">
+              <CardTitle>การลงทุน (เงินจริง · Spot 1x)</CardTitle>
+              <CardDescription>
+                ตั้งค่าก่อนรันทดสอบย้อนหลังทุกแบบ — qty = เงินที่ลง ÷ ราคาเข้า (ปัด 8 ตำแหน่ง) · ใช้กับทั้ง 3 การทดสอบด้านล่าง
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="pt-3 space-y-2.5">
+              <div className="flex flex-wrap items-end gap-3">
+                <Field label="ทุนเริ่มต้น (USDT)">
+                  <Input type="number" step="any" value={initialCapital} onChange={e => { setInitialCapital(e.target.value); setBtResult(null); }} className="w-28" />
+                </Field>
+                <Field label="ค่าธรรมเนียม (%)">
+                  <Input type="number" step="0.01" value={feesPct} onChange={e => { setFeesPct(e.target.value); setBtResult(null); }} className="w-20" />
+                </Field>
+                <div className="space-y-1">
+                  <p className="text-[11px] text-muted-foreground">โหมดคิดขนาดไม้</p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {([
+                      { id: "all_in", name: "ทุนทั้งก้อน" },
+                      { id: "fixed", name: "เงินคงที่/ไม้" },
+                      { id: "pct", name: "% ของทุน" },
+                      { id: "risk", name: "% ความเสี่ยง" },
+                    ] as { id: SizingMode; name: string }[]).map(m => (
+                      <Button
+                        key={m.id}
+                        variant={sizingMode === m.id ? "default" : "outline"}
+                        size="sm"
+                        className={`text-[11px] h-8 px-3 ${sizingMode === m.id ? "" : "text-muted-foreground hover:text-foreground"}`}
+                        onClick={() => { setSizingMode(m.id); setBtResult(null); }}
+                      >
+                        {m.name}
+                      </Button>
+                    ))}
+                  </div>
+                </div>
+                {sizingMode === "fixed" && (
+                  <Field label="เงินต่อไม้ (USDT)">
+                    <Input type="number" step="any" value={fixedAmount} onChange={e => { setFixedAmount(e.target.value); setBtResult(null); }} className="w-24" />
+                  </Field>
+                )}
+                {sizingMode === "pct" && (
+                  <Field label="% ของทุน/ไม้">
+                    <Input type="number" step="any" value={pctOfCapital} onChange={e => { setPctOfCapital(e.target.value); setBtResult(null); }} className="w-20" />
+                  </Field>
+                )}
+                {sizingMode === "risk" && (
+                  <>
+                    <Field label="% ความเสี่ยง/ไม้">
+                      <Input type="number" step="any" value={riskPct} onChange={e => { setRiskPct(e.target.value); setBtResult(null); }} className="w-20" />
+                    </Field>
+                    <Field label="ระยะ Stop Loss (%)">
+                      <Input type="number" step="any" value={stopLossPct} onChange={e => { setStopLossPct(e.target.value); setBtResult(null); }} className="w-20" />
+                    </Field>
+                  </>
+                )}
+              </div>
+              <p className="text-[10px] text-muted-foreground">
+                {sizingMode === "all_in" && "ทุกไม้ลงเงินทั้งหมดที่มี (ทบต้น/compound)"}
+                {sizingMode === "fixed" && "ทุกไม้ลงเงินเท่ากันคงที่ (จำกัดไม่เกินทุนคงเหลือ)"}
+                {sizingMode === "pct" && "ลงเป็น % ของทุนปัจจุบันทุกไม้ (ทบต้นแบบเปอร์เซ็นต์)"}
+                {sizingMode === "risk" && "เสี่ยงเป็น % ของทุนต่อไม้ → ขนาดไม้ = เงินเสี่ยง ÷ ระยะ SL (จำกัดไม่เกินทุน)"}
+              </p>
+            </CardContent>
+          </Card>
+        )}
+
         {/* ═══ Multi-Backtest: ทุก strategy × ทุก combo ═══ */}
         {(loadedCombos.size > 0 || csvFiles.length > 0) && (
           <Card size="sm">
@@ -1675,6 +1761,7 @@ export default function KlinesPage() {
                           <TableHead>กลยุทธ์</TableHead>
                           <TableHead>คู่เหรียญ · ช่วง</TableHead>
                           <TableHead className="text-right">P&L</TableHead>
+                          <TableHead className="text-right">กำไร ($)</TableHead>
                           <TableHead className="text-right">Win</TableHead>
                           <TableHead className="text-right">เทรด</TableHead>
                           <TableHead className="text-right">DD</TableHead>
@@ -1716,6 +1803,9 @@ export default function KlinesPage() {
                                 <TableCell className={`text-right tabular-nums font-semibold ${pnlColor(r.totalPnlPct)}`}>
                                   {r.totalPnlPct >= 0 ? "+" : ""}{r.totalPnlPct.toFixed(2)}%
                                 </TableCell>
+                                <TableCell className={`text-right tabular-nums text-xs font-medium ${pnlColor(r.totalPnlUsd ?? 0)}`}>
+                                  {(r.totalPnlUsd ?? 0) >= 0 ? "+" : ""}{(r.totalPnlUsd ?? 0).toLocaleString("en-US", { maximumFractionDigits: 2 })} $
+                                </TableCell>
                                 <TableCell className={`text-right tabular-nums text-xs ${r.winRate >= 50 ? "text-emerald-500" : "text-red-500"}`}>
                                   {r.winRate.toFixed(1)}%
                                 </TableCell>
@@ -1740,8 +1830,16 @@ export default function KlinesPage() {
                               </TableRow>
                               {isExpanded && (
                                 <TableRow>
-                                  <TableCell colSpan={11} className="p-0">
+                                  <TableCell colSpan={12} className="p-0">
                                     <div className="border-t bg-muted/20 px-4 py-3 space-y-2">
+                                      {/* สรุปเงินจริง (USDT) */}
+                                      <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
+                                        <StatCard label="ทุนเริ่มต้น" value={`${(r.initialCapital ?? 0).toLocaleString("en-US", { maximumFractionDigits: 2 })} $`} size="sm" />
+                                        <StatCard label="ทุนสุดท้าย" value={`${(r.finalCapital ?? 0).toLocaleString("en-US", { maximumFractionDigits: 2 })} $`} color={(r.finalCapital ?? 0) >= (r.initialCapital ?? 0) ? "text-emerald-500" : "text-red-500"} size="sm" />
+                                        <StatCard label="กำไร/ขาดทุน ($)" value={`${(r.totalPnlUsd ?? 0) >= 0 ? "+" : ""}${(r.totalPnlUsd ?? 0).toLocaleString("en-US", { maximumFractionDigits: 2 })} $`} color={pnlColor(r.totalPnlUsd ?? 0)} size="sm" />
+                                        <StatCard label="มูลค่าซื้อรวม ($)" value={`${r.trades.reduce((s, t) => s + (t.positionValue ?? 0), 0).toLocaleString("en-US", { maximumFractionDigits: 2 })} $`} size="sm" />
+                                        <StatCard label="ค่าธรรมเนียมรวม" value={`${(r.totalFeesUsd ?? 0).toLocaleString("en-US", { maximumFractionDigits: 2 })} $`} color="text-amber-500" size="sm" />
+                                      </div>
                                       <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
                                         <StatCard label="กำไรเฉลี่ย" value={`+${r.avgWinPct.toFixed(2)}%`} color="text-emerald-500" size="sm" />
                                         <StatCard label="ขาดทุนเฉลี่ย" value={`${r.avgLossPct.toFixed(2)}%`} color="text-red-500" size="sm" />
@@ -1753,8 +1851,9 @@ export default function KlinesPage() {
                                           <span
                                             key={i}
                                             className={`inline-flex items-center rounded px-1.5 py-0.5 text-[9px] font-medium tabular-nums ${t.pnlPct >= 0 ? "bg-emerald-500/10 text-emerald-500" : "bg-red-500/10 text-red-500"}`}
+                                            title={`ซื้อ ${(t.qty ?? 0).toLocaleString("en-US", { maximumFractionDigits: 8 })} @ ${t.entryPrice} · มูลค่า ${(t.positionValue ?? 0).toLocaleString("en-US", { maximumFractionDigits: 2 })}$ · กำไร ${(t.pnlUsd ?? 0).toLocaleString("en-US", { maximumFractionDigits: 2 })}$`}
                                           >
-                                            #{i + 1} {t.pnlPct >= 0 ? "+" : ""}{t.pnlPct.toFixed(2)}%
+                                            #{i + 1} {(t.pnlUsd ?? 0) >= 0 ? "+" : ""}{(t.pnlUsd ?? 0).toLocaleString("en-US", { maximumFractionDigits: 2 })}$
                                           </span>
                                         ))}
                                       </div>
@@ -1787,7 +1886,8 @@ export default function KlinesPage() {
                             {multiBtResults[0].strategyName} · {multiBtResults[0].symbol}·{multiBtResults[0].interval}
                           </p>
                           <p className="text-xs tabular-nums text-emerald-500">
-                            +{multiBtResults[0].result.totalPnlPct.toFixed(2)}%
+                            {(multiBtResults[0].result.totalPnlUsd ?? 0) >= 0 ? "+" : ""}{(multiBtResults[0].result.totalPnlUsd ?? 0).toLocaleString("en-US", { maximumFractionDigits: 2 })} $
+                            <span className="text-muted-foreground"> ({multiBtResults[0].result.totalPnlPct >= 0 ? "+" : ""}{multiBtResults[0].result.totalPnlPct.toFixed(2)}%)</span>
                           </p>
                         </CardContent>
                       </Card>
@@ -1799,7 +1899,8 @@ export default function KlinesPage() {
                             {multiBtResults[multiBtResults.length - 1].symbol}·{multiBtResults[multiBtResults.length - 1].interval}
                           </p>
                           <p className="text-xs tabular-nums text-red-500">
-                            {multiBtResults[multiBtResults.length - 1].result.totalPnlPct.toFixed(2)}%
+                            {(multiBtResults[multiBtResults.length - 1].result.totalPnlUsd ?? 0).toLocaleString("en-US", { maximumFractionDigits: 2 })} $
+                            <span className="text-muted-foreground"> ({multiBtResults[multiBtResults.length - 1].result.totalPnlPct.toFixed(2)}%)</span>
                           </p>
                         </CardContent>
                       </Card>
@@ -1845,6 +1946,7 @@ export default function KlinesPage() {
                           <TableHead>กลยุทธ์</TableHead>
                           <TableHead className="text-right">ซื้อ/ขายในกราฟ</TableHead>
                           <TableHead className="text-right">กำไร/ขาดทุน</TableHead>
+                          <TableHead className="text-right">กำไร ($)</TableHead>
                           <TableHead className="text-right">อัตราชนะ</TableHead>
                           <TableHead className="text-right">จำนวนเทรด</TableHead>
                           <TableHead className="text-right">Drawdown</TableHead>
@@ -1885,6 +1987,9 @@ export default function KlinesPage() {
                                 <TableCell className={`text-right tabular-nums font-semibold ${pnlColor(r.totalPnlPct)}`}>
                                   {r.totalPnlPct >= 0 ? "+" : ""}{r.totalPnlPct.toFixed(2)}%
                                 </TableCell>
+                                <TableCell className={`text-right tabular-nums text-xs font-medium ${pnlColor(r.totalPnlUsd ?? 0)}`}>
+                                  {(r.totalPnlUsd ?? 0) >= 0 ? "+" : ""}{(r.totalPnlUsd ?? 0).toLocaleString("en-US", { maximumFractionDigits: 2 })} $
+                                </TableCell>
                                 <TableCell className={`text-right tabular-nums text-xs ${r.winRate >= 50 ? "text-emerald-500" : "text-red-500"}`}>
                                   {r.winRate.toFixed(1)}%
                                 </TableCell>
@@ -1909,7 +2014,7 @@ export default function KlinesPage() {
                               </TableRow>
                               {isExpanded && (
                                 <TableRow>
-                                  <TableCell colSpan={11} className="p-0">
+                                  <TableCell colSpan={12} className="p-0">
                                     <div className="border-t bg-muted/20 px-4 py-3 space-y-3">
                                       {/* Strategy description */}
                                       {(() => {
@@ -1922,6 +2027,14 @@ export default function KlinesPage() {
                                           </div>
                                         );
                                       })()}
+                                      {/* สรุปเงินจริง (USDT) */}
+                                      <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
+                                        <StatCard label="ทุนเริ่มต้น" value={`${(r.initialCapital ?? 0).toLocaleString("en-US", { maximumFractionDigits: 2 })} $`} size="sm" />
+                                        <StatCard label="ทุนสุดท้าย" value={`${(r.finalCapital ?? 0).toLocaleString("en-US", { maximumFractionDigits: 2 })} $`} color={(r.finalCapital ?? 0) >= (r.initialCapital ?? 0) ? "text-emerald-500" : "text-red-500"} size="sm" />
+                                        <StatCard label="กำไร/ขาดทุน ($)" value={`${(r.totalPnlUsd ?? 0) >= 0 ? "+" : ""}${(r.totalPnlUsd ?? 0).toLocaleString("en-US", { maximumFractionDigits: 2 })} $`} color={pnlColor(r.totalPnlUsd ?? 0)} size="sm" />
+                                        <StatCard label="มูลค่าซื้อรวม ($)" value={`${r.trades.reduce((s, t) => s + (t.positionValue ?? 0), 0).toLocaleString("en-US", { maximumFractionDigits: 2 })} $`} size="sm" />
+                                        <StatCard label="ค่าธรรมเนียมรวม" value={`${(r.totalFeesUsd ?? 0).toLocaleString("en-US", { maximumFractionDigits: 2 })} $`} color="text-amber-500" size="sm" />
+                                      </div>
                                       {/* Stats grid */}
                                       <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
                                         <StatCard label="กำไรเฉลี่ย" value={`+${r.avgWinPct.toFixed(2)}%`} color="text-emerald-500" size="sm" />
@@ -1934,14 +2047,15 @@ export default function KlinesPage() {
                                         <StatCard label="ซื้อแล้วถือ" value={`${r.buyAndHoldPct >= 0 ? "+" : ""}${r.buyAndHoldPct.toFixed(2)}%`} color={pnlColor(r.buyAndHoldPct)} size="sm" />
                                         <StatCard label={diff >= 0 ? "กลยุทธ์ชนะซื้อถือ" : "ซื้อถือชนะกลยุทธ์"} value={`${diff >= 0 ? "+" : ""}${diff.toFixed(2)}%`} color={diff >= 0 ? "text-emerald-500" : "text-red-500"} size="sm" />
                                       </div>
-                                      {/* Trade P&L pills */}
+                                      {/* Trade P&L pills (เงินจริง) */}
                                       <div className="flex flex-wrap gap-1">
                                         {r.trades.map((t, i) => (
                                           <span
                                             key={i}
-                                            className={`inline-flex items-center rounded px-1.5 py-0.5 text-[9px] font-medium tabular-nums ${t.pnlPct >= 0 ? "bg-emerald-500/10 text-emerald-500" : "bg-red-500/10 text-red-500"}`}
+                                            className={`inline-flex items-center rounded px-1.5 py-0.5 text-[9px] font-medium tabular-nums ${(t.pnlUsd ?? 0) >= 0 ? "bg-emerald-500/10 text-emerald-500" : "bg-red-500/10 text-red-500"}`}
+                                            title={`ซื้อ ${(t.qty ?? 0).toLocaleString("en-US", { maximumFractionDigits: 8 })} @ ${t.entryPrice} · มูลค่า ${(t.positionValue ?? 0).toLocaleString("en-US", { maximumFractionDigits: 2 })}$ · กำไร ${(t.pnlUsd ?? 0).toLocaleString("en-US", { maximumFractionDigits: 2 })}$ (${t.pnlPct >= 0 ? "+" : ""}${t.pnlPct.toFixed(2)}%)`}
                                           >
-                                            #{i + 1} {t.pnlPct >= 0 ? "+" : ""}{t.pnlPct.toFixed(2)}%
+                                            #{i + 1} {(t.pnlUsd ?? 0) >= 0 ? "+" : ""}{(t.pnlUsd ?? 0).toLocaleString("en-US", { maximumFractionDigits: 2 })}$
                                           </span>
                                         ))}
                                       </div>
@@ -1963,14 +2077,20 @@ export default function KlinesPage() {
                         <CardContent className="py-2.5">
                           <p className="text-[10px] text-muted-foreground">กลยุทธ์ที่ดีที่สุด</p>
                           <p className="text-sm font-semibold text-emerald-500">{allBtResults[0].name}</p>
-                          <p className="text-xs tabular-nums text-emerald-500">+{allBtResults[0].result.totalPnlPct.toFixed(2)}%</p>
+                          <p className="text-xs tabular-nums text-emerald-500">
+                            {(allBtResults[0].result.totalPnlUsd ?? 0) >= 0 ? "+" : ""}{(allBtResults[0].result.totalPnlUsd ?? 0).toLocaleString("en-US", { maximumFractionDigits: 2 })} $
+                            <span className="text-muted-foreground"> (+{allBtResults[0].result.totalPnlPct.toFixed(2)}%)</span>
+                          </p>
                         </CardContent>
                       </Card>
                       <Card size="sm" className="flex-1 ring-red-500/20">
                         <CardContent className="py-2.5">
                           <p className="text-[10px] text-muted-foreground">กลยุทธ์ที่แย่ที่สุด</p>
                           <p className="text-sm font-semibold text-red-500">{allBtResults[allBtResults.length - 1].name}</p>
-                          <p className="text-xs tabular-nums text-red-500">{allBtResults[allBtResults.length - 1].result.totalPnlPct.toFixed(2)}%</p>
+                          <p className="text-xs tabular-nums text-red-500">
+                            {(allBtResults[allBtResults.length - 1].result.totalPnlUsd ?? 0).toLocaleString("en-US", { maximumFractionDigits: 2 })} $
+                            <span className="text-muted-foreground"> ({allBtResults[allBtResults.length - 1].result.totalPnlPct.toFixed(2)}%)</span>
+                          </p>
                         </CardContent>
                       </Card>
                     </div>
@@ -2012,19 +2132,24 @@ export default function KlinesPage() {
                   </div>
                 </div>
 
-                {/* Run controls + PnL */}
+                {/* Run controls + PnL — ใช้ค่าการลงทุน/ค่าธรรมเนียมจากการ์ด "การลงทุน" ด้านบน */}
                 <div className="flex items-center justify-between gap-3">
                   <div className="flex items-center gap-3">
-                    <Field label="ค่าธรรมเนียม (%)">
-                      <Input type="number" step="0.01" value={feesPct} onChange={e => setFeesPct(e.target.value)} className="w-20" />
-                    </Field>
                     <Button onClick={runBt} disabled={btRunning || klines.length < 50} className="h-9">
                       {btRunning ? "กำลังรัน..." : "รัน Backtest"}
                     </Button>
+                    <span className="text-[11px] text-muted-foreground">
+                      ทุน {initialCapital} USDT · {SIZING_MODE_LABELS[sizingMode]} · ค่าธรรมเนียม {feesPct}%
+                    </span>
                   </div>
                   {btResult ? (
-                    <span className={`text-lg font-bold tabular-nums ${btResult.totalPnlPct >= 0 ? "text-emerald-500" : "text-red-500"}`}>
-                      กำไรรวม: {btResult.totalPnlPct >= 0 ? "+" : ""}{btResult.totalPnlPct.toFixed(2)}%
+                    <span className="text-right">
+                      <span className={`text-lg font-bold tabular-nums ${(btResult.totalPnlUsd ?? 0) >= 0 ? "text-emerald-500" : "text-red-500"}`}>
+                        {(btResult.totalPnlUsd ?? 0) >= 0 ? "+" : ""}{(btResult.totalPnlUsd ?? 0).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} $
+                      </span>
+                      <span className="block text-[11px] text-muted-foreground tabular-nums">
+                        ({btResult.totalPnlPct >= 0 ? "+" : ""}{btResult.totalPnlPct.toFixed(2)}% · ทุนสุดท้าย {(btResult.finalCapital ?? 0).toLocaleString("en-US", { maximumFractionDigits: 2 })} $)
+                      </span>
                     </span>
                   ) : (
                     <span className="text-sm text-muted-foreground">กำไรรวม หลัง backtest : —</span>
@@ -3429,6 +3554,13 @@ function IndicatorPanel({ indicators, klines }: { indicators: AllIndicators; kli
 }
 
 // ─── Backtest Results ──────────────────────────────────────────
+const SIZING_MODE_LABELS: Record<SizingMode, string> = {
+  all_in: "ทุนทั้งก้อน",
+  fixed: "เงินคงที่/ไม้",
+  pct: "% ของทุน",
+  risk: "% ความเสี่ยง",
+};
+
 function BacktestResults({ result }: { result: BacktestResult }) {
   const [tradePage, setTradePage] = useState(0);
   const tradePageSize = 20;
@@ -3437,8 +3569,36 @@ function BacktestResults({ result }: { result: BacktestResult }) {
 
   const strategyBetter = result.totalPnlPct > result.buyAndHoldPct;
 
+  // ── เงินจริง (USDT) — มาจาก position sizing ──
+  const initialCapital = result.initialCapital ?? 0;
+  const finalCapital = result.finalCapital ?? 0;
+  const totalPnlUsd = result.totalPnlUsd ?? 0;
+  const totalReturnPct = result.totalReturnPct ?? 0;
+  const totalFeesUsd = result.totalFeesUsd ?? 0;
+  const maxDrawdownUsd = result.maxDrawdownUsd ?? 0;
+  const sizingLabel = SIZING_MODE_LABELS[result.sizingMode ?? "all_in"];
+  const fmtUsd = (n: number) => `${n >= 0 ? "" : "-"}${Math.abs(n).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
   return (
     <div className="space-y-4">
+      {/* สรุปเงินจริง (USDT) */}
+      <div className="rounded-lg border border-border/60 bg-muted/20 p-3">
+        <div className="mb-2 flex items-center justify-between">
+          <p className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">สรุปเงินจริง (USDT · Spot 1x)</p>
+          <span className="text-[10px] text-muted-foreground">โหมด: {sizingLabel}</span>
+        </div>
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
+          <StatCard label="ทุนเริ่มต้น" value={`${fmtUsd(initialCapital)} $`} size="sm" />
+          <StatCard label="ทุนสุดท้าย" value={`${fmtUsd(finalCapital)} $`} color={finalCapital >= initialCapital ? "text-emerald-500" : "text-red-500"} size="sm" />
+          <StatCard label="กำไร/ขาดทุน (เงิน)" value={`${totalPnlUsd >= 0 ? "+" : ""}${fmtUsd(totalPnlUsd)} $`} color={pnlColor(totalPnlUsd)} bg={pnlBg(totalPnlUsd)} size="sm" />
+          <StatCard label="ผลตอบแทนต่อทุน" value={`${totalReturnPct >= 0 ? "+" : ""}${totalReturnPct.toFixed(2)}%`} color={pnlColor(totalReturnPct)} size="sm" />
+          <StatCard label="ค่าธรรมเนียมรวม" value={`${fmtUsd(totalFeesUsd)} $`} color="text-amber-500" size="sm" />
+        </div>
+        <div className="mt-2 text-[11px] text-muted-foreground">
+          Drawdown สูงสุด (เงิน): <span className="text-red-500 font-medium">-{fmtUsd(maxDrawdownUsd)} $</span>
+        </div>
+      </div>
+
       {/* P&L Summary */}
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-2 lg:grid-cols-4">
         <StatCard label="กำไร/ขาดทุนรวม" value={`${result.totalPnlPct >= 0 ? "+" : ""}${result.totalPnlPct.toFixed(2)}%`} color={pnlColor(result.totalPnlPct)} bg={pnlBg(result.totalPnlPct)} />
@@ -3528,7 +3688,11 @@ function BacktestResults({ result }: { result: BacktestResult }) {
                 <TableHead className="text-right">ราคาเข้า</TableHead>
                 <TableHead>เวลาออก</TableHead>
                 <TableHead className="text-right">ราคาออก</TableHead>
+                <TableHead className="text-right">จำนวนเหรียญ</TableHead>
+                <TableHead className="text-right">ขนาดไม้ ($)</TableHead>
                 <TableHead className="text-right">กำไร/ขาดทุน %</TableHead>
+                <TableHead className="text-right">กำไร/ขาดทุน ($)</TableHead>
+                <TableHead className="text-right">ทุนคงเหลือ ($)</TableHead>
                 <TableHead className="text-right">แท่ง</TableHead>
                 <TableHead>เหตุผล</TableHead>
               </TableRow>
@@ -3541,9 +3705,15 @@ function BacktestResults({ result }: { result: BacktestResult }) {
                   <TableCell className="text-right tabular-nums">{fmtPrice(t.entryPrice)}</TableCell>
                   <TableCell className="text-muted-foreground">{fmtDate(t.exitTime)}</TableCell>
                   <TableCell className="text-right tabular-nums">{fmtPrice(t.exitPrice)}</TableCell>
+                  <TableCell className="text-right tabular-nums text-muted-foreground">{(t.qty ?? 0).toLocaleString("en-US", { maximumFractionDigits: 8 })}</TableCell>
+                  <TableCell className="text-right tabular-nums text-muted-foreground">{(t.positionValue ?? 0).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</TableCell>
                   <TableCell className={`text-right tabular-nums font-medium ${pnlColor(t.pnlPct)}`}>
                     {t.pnlPct >= 0 ? "+" : ""}{t.pnlPct.toFixed(2)}%
                   </TableCell>
+                  <TableCell className={`text-right tabular-nums font-medium ${pnlColor(t.pnlUsd ?? 0)}`}>
+                    {(t.pnlUsd ?? 0) >= 0 ? "+" : ""}{(t.pnlUsd ?? 0).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  </TableCell>
+                  <TableCell className="text-right tabular-nums text-muted-foreground">{(t.equityAfter ?? 0).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</TableCell>
                   <TableCell className="text-right tabular-nums text-muted-foreground">{t.bars}</TableCell>
                   <TableCell className="text-[10px] text-muted-foreground max-w-40 truncate">{t.reason}</TableCell>
                 </TableRow>

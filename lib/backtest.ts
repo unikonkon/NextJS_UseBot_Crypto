@@ -11,11 +11,39 @@ export interface Trade {
   exitIdx: number;
   exitTime: number;
   exitPrice: number;
-  pnl: number;       // absolute
+  pnl: number;       // absolute (price diff)
   pnlPct: number;    // percentage
   bars: number;       // holding period
   reason: string;     // why entered / exited
+  // ── Position sizing (เงินจริง — ตรรกะเดียวกับหน้า trading/Binance: qty = ทุน ÷ ราคา) ──
+  // optional เพื่อให้ผู้สร้าง Trade แบบ synthetic ที่อื่น (discordBot/Gold) ยังใช้ได้
+  qty?: number;          // จำนวนเหรียญที่ซื้อ (ปัด 8 ตำแหน่ง)
+  positionValue?: number; // เงิน USDT ที่ลงในไม้นี้ (qty × entryPrice)
+  feesUsd?: number;       // ค่าธรรมเนียมรวมสองขา (USDT)
+  pnlUsd?: number;        // กำไร/ขาดทุนสุทธิเป็นเงิน (USDT)
+  equityAfter?: number;   // เงินทุนคงเหลือหลังปิดไม้นี้ (USDT)
 }
+
+// ── โหมดคิดขนาดการลงทุนต่อไม้ (Spot 1x, ไม่มี leverage) ──
+export type SizingMode = "all_in" | "fixed" | "pct" | "risk";
+
+export interface SizingConfig {
+  mode: SizingMode;
+  initialCapital: number; // ทุนเริ่มต้น (USDT)
+  fixedAmount?: number;   // mode "fixed": เงินคงที่ต่อไม้ (USDT)
+  pctOfCapital?: number;  // mode "pct": % ของทุนปัจจุบันต่อไม้ (0–100)
+  riskPct?: number;       // mode "risk": % ความเสี่ยงของทุนต่อไม้ (0–100)
+  stopLossPct?: number;   // mode "risk": ระยะ stop loss เป็น % ของราคา (>0)
+}
+
+export const DEFAULT_SIZING: SizingConfig = {
+  mode: "fixed",
+  initialCapital: 1000,
+  fixedAmount: 100,
+  pctOfCapital: 10,
+  riskPct: 2,
+  stopLossPct: 2,
+};
 
 export interface BacktestResult {
   trades: Trade[];
@@ -35,6 +63,15 @@ export interface BacktestResult {
   equityCurve: number[];   // cumulative % at each bar
   signals: SignalAction[];  // signal at each bar
   buyAndHoldPct: number;
+  // ── สรุปเป็นเงินจริง (USDT) — optional เพื่อให้ synthetic result ที่อื่นยังใช้ได้ ──
+  sizingMode?: SizingMode;
+  initialCapital?: number;  // ทุนเริ่มต้น (USDT)
+  finalCapital?: number;    // ทุนสุดท้าย (USDT)
+  totalPnlUsd?: number;     // กำไร/ขาดทุนรวมเป็นเงิน (USDT)
+  totalReturnPct?: number;  // ผลตอบแทนรวมเทียบทุนเริ่มต้น (%)
+  totalFeesUsd?: number;    // ค่าธรรมเนียมรวม (USDT)
+  maxDrawdownUsd?: number;  // drawdown สูงสุดเป็นเงิน (USDT)
+  equityCurveUsd?: number[]; // ทุนคงเหลือ (USDT) ที่แต่ละแท่ง
 }
 
 export type StrategyId =
@@ -595,6 +632,7 @@ export function runBacktest(
   strategyId: StrategyId,
   params: Record<string, number> = {},
   feesPct = 0.1, // 0.1% per trade (Binance default)
+  sizing: SizingConfig = DEFAULT_SIZING,
 ): BacktestResult {
   const indicators = computeAll(klines, {
     rsiPeriod: strategyId === "rsi" ? (params.period ?? 14) : undefined,
@@ -697,6 +735,72 @@ export function runBacktest(
   let entryPrice = 0;
   let entryReason = "";
 
+  // ── Position sizing — เงินทุนเดินเป็นเงินจริง (USDT), Spot 1x ──
+  const initialCapital = sizing.initialCapital > 0 ? sizing.initialCapital : 1000;
+  let equity = initialCapital; // ทุนคงเหลือปัจจุบัน
+  const round8 = (x: number) => +x.toFixed(8); // ปัด qty 8 ตำแหน่ง (เหมือนหน้า trading/Binance)
+
+  // เลือกเงินที่จะลงในไม้นี้ตามโหมด แล้วได้ qty = เงินที่ลง ÷ ราคาเข้า
+  const planEntry = (price: number) => {
+    if (equity <= 0 || price <= 0) return { qty: 0, positionValue: 0 };
+    let target: number;
+    switch (sizing.mode) {
+      case "all_in":
+        target = equity;
+        break;
+      case "fixed":
+        target = sizing.fixedAmount ?? 100;
+        break;
+      case "pct":
+        target = equity * ((sizing.pctOfCapital ?? 10) / 100);
+        break;
+      case "risk": {
+        const riskAmount = equity * ((sizing.riskPct ?? 2) / 100);
+        const sl = (sizing.stopLossPct ?? 2) / 100;
+        target = sl > 0 ? riskAmount / sl : equity;
+        break;
+      }
+      default:
+        target = equity;
+    }
+    const positionValueWanted = Math.min(target, equity); // Spot: ลงเกินทุนไม่ได้
+    const qty = round8(positionValueWanted / price);
+    return { qty, positionValue: qty * price };
+  };
+
+  // ปิดไม้: คิดกำไร/ขาดทุนเป็นเงินจริง + อัปเดตทุน แล้ว push trade
+  const closeTrade = (
+    qty: number, positionValue: number,
+    exitIdx: number, exitPrice: number, reason: string,
+  ) => {
+    const grossPnlPct = ((exitPrice - entryPrice) / entryPrice) * 100;
+    const netPnlPct = grossPnlPct - feesPct * 2; // entry + exit fee (%)
+    const exitValue = qty * exitPrice;
+    const feesUsd = (positionValue + exitValue) * (feesPct / 100); // ค่าธรรมเนียมสองขา
+    const pnlUsd = (exitValue - positionValue) - feesUsd;
+    equity += pnlUsd;
+    trades.push({
+      entryIdx,
+      entryTime: klines[entryIdx].openTime,
+      entryPrice,
+      exitIdx,
+      exitTime: klines[exitIdx].openTime,
+      exitPrice,
+      pnl: exitPrice - entryPrice,
+      pnlPct: netPnlPct,
+      bars: exitIdx - entryIdx,
+      reason,
+      qty,
+      positionValue,
+      feesUsd,
+      pnlUsd,
+      equityAfter: equity,
+    });
+  };
+
+  let curQty = 0;
+  let curPositionValue = 0;
+
   // Generate trades
   for (let i = 0; i < klines.length; i++) {
     if (!inPosition && signals[i] === "BUY") {
@@ -704,43 +808,18 @@ export function runBacktest(
       entryIdx = i;
       entryPrice = closes[i];
       entryReason = "BUY signal";
+      const plan = planEntry(entryPrice);
+      curQty = plan.qty;
+      curPositionValue = plan.positionValue;
     } else if (inPosition && signals[i] === "SELL") {
-      const exitPrice = closes[i];
-      const grossPnlPct = ((exitPrice - entryPrice) / entryPrice) * 100;
-      const netPnlPct = grossPnlPct - feesPct * 2; // entry + exit fee
-      trades.push({
-        entryIdx,
-        entryTime: klines[entryIdx].openTime,
-        entryPrice,
-        exitIdx: i,
-        exitTime: klines[i].openTime,
-        exitPrice,
-        pnl: exitPrice - entryPrice,
-        pnlPct: netPnlPct,
-        bars: i - entryIdx,
-        reason: `${entryReason} → SELL signal`,
-      });
+      closeTrade(curQty, curPositionValue, i, closes[i], `${entryReason} → SELL signal`);
       inPosition = false;
     }
   }
 
   // Close any open position at last bar
   if (inPosition) {
-    const exitPrice = closes[closes.length - 1];
-    const grossPnlPct = ((exitPrice - entryPrice) / entryPrice) * 100;
-    const netPnlPct = grossPnlPct - feesPct * 2;
-    trades.push({
-      entryIdx,
-      entryTime: klines[entryIdx].openTime,
-      entryPrice,
-      exitIdx: klines.length - 1,
-      exitTime: klines[klines.length - 1].openTime,
-      exitPrice,
-      pnl: exitPrice - entryPrice,
-      pnlPct: netPnlPct,
-      bars: klines.length - 1 - entryIdx,
-      reason: `${entryReason} → Force close (end)`,
-    });
+    closeTrade(curQty, curPositionValue, klines.length - 1, closes[closes.length - 1], `${entryReason} → Force close (end)`);
   }
 
   // Stats
@@ -758,25 +837,43 @@ export function runBacktest(
   const grossLosses = Math.abs(losses.reduce((s, t) => s + t.pnlPct, 0));
   const profitFactor = grossLosses === 0 ? (grossWins > 0 ? Infinity : 0) : grossWins / grossLosses;
 
-  // Equity curve (cumulative %)
+  // Equity curve (cumulative %) + เงินจริง (USDT) แบบขนานกัน
   const equityCurve: number[] = [];
+  const equityCurveUsd: number[] = [];
   let cumPnl = 0;
+  let curEquityUsd = initialCapital;
   let tradeIdx = 0;
   for (let i = 0; i < klines.length; i++) {
     if (tradeIdx < trades.length && i === trades[tradeIdx].exitIdx) {
       cumPnl += trades[tradeIdx].pnlPct;
+      curEquityUsd = trades[tradeIdx].equityAfter ?? curEquityUsd;
       tradeIdx++;
     }
     equityCurve.push(cumPnl);
+    equityCurveUsd.push(curEquityUsd);
   }
 
-  // Max drawdown
+  // Max drawdown (%)
   let peak = 0, maxDD = 0;
   for (const eq of equityCurve) {
     if (eq > peak) peak = eq;
     const dd = peak - eq;
     if (dd > maxDD) maxDD = dd;
   }
+
+  // Max drawdown (เงินจริง — peak-to-valley ของทุน USDT)
+  let peakUsd = initialCapital, maxDDUsd = 0;
+  for (const eq of equityCurveUsd) {
+    if (eq > peakUsd) peakUsd = eq;
+    const dd = peakUsd - eq;
+    if (dd > maxDDUsd) maxDDUsd = dd;
+  }
+
+  // สรุปเงินจริง
+  const finalCapital = equity;
+  const totalPnlUsd = finalCapital - initialCapital;
+  const totalReturnPct = initialCapital > 0 ? (totalPnlUsd / initialCapital) * 100 : 0;
+  const totalFeesUsd = trades.reduce((s, t) => s + (t.feesUsd ?? 0), 0);
 
   // Sharpe (simplified — using trade returns)
   const tradePnls = trades.map(t => t.pnlPct);
@@ -807,5 +904,13 @@ export function runBacktest(
     equityCurve,
     signals,
     buyAndHoldPct,
+    sizingMode: sizing.mode,
+    initialCapital,
+    finalCapital,
+    totalPnlUsd,
+    totalReturnPct,
+    totalFeesUsd,
+    maxDrawdownUsd: maxDDUsd,
+    equityCurveUsd,
   };
 }
