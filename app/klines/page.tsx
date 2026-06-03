@@ -548,6 +548,10 @@ export default function KlinesPage() {
   const [multiBtExpanded, setMultiBtExpanded] = useState<Set<string>>(new Set());
   const [multiBtSort, setMultiBtSort] = useState<"pnl" | "strategy" | "combo">("pnl");
   const [multiBtCollapsed, setMultiBtCollapsed] = useState(false);
+  // แถวจากตาราง Multi-Backtest ที่เลือกแสดงสัญญาณ ซื้อ/ขาย บนกราฟ (combo + strategy) — เลือกได้ทีละ 1
+  const [multiBtGraphSel, setMultiBtGraphSel] = useState<{ comboKey: string; strategyId: StrategyId } | null>(null);
+  // ref ไว้เลื่อนหน้าจอกลับขึ้นไปที่กราฟเมื่อกดแสดงสัญญาณ
+  const chartScrollRef = useRef<HTMLDivElement>(null);
 
   const activeSymbol = customSymbol.trim().toUpperCase() || symbol;
 
@@ -785,6 +789,24 @@ export default function KlinesPage() {
       setAllBtResults(null);
     }
   }, [loadedCombos]);
+
+  // แสดงสัญญาณ ซื้อ/ขาย ของแถว Multi-Backtest (strategy × combo) บนกราฟด้านบน
+  const showMultiBtOnGraph = useCallback((row: MultiBtRow) => {
+    setMultiBtGraphSel(prev => {
+      // กดซ้ำที่แถวเดิม = ปิดการแสดง
+      if (prev && prev.comboKey === row.comboKey && prev.strategyId === row.strategyId) {
+        return null;
+      }
+      // โหลด klines ของ combo นี้เข้ากราฟ + ล้างสัญญาณจากตารางอื่น
+      selectCombo(row.comboKey);
+      setGraphSignalStrategy(null);
+      // เลื่อนจอขึ้นไปดูกราฟ
+      requestAnimationFrame(() => {
+        chartScrollRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+      });
+      return { comboKey: row.comboKey, strategyId: row.strategyId };
+    });
+  }, [selectCombo]);
 
   const removeCombo = useCallback((key: string) => {
     setLoadedCombos(prev => {
@@ -1578,18 +1600,33 @@ export default function KlinesPage() {
 
         {/* Price Chart (lightweight-charts) */}
         {klines.length > 0 && (() => {
-          const sigItem = graphSignalStrategy
-            ? allBtResults?.find(r => r.strategyId === graphSignalStrategy) ?? null
-            : null;
+          // ลำดับความสำคัญ: สัญญาณจากตาราง Multi-Backtest (strategy × combo) มาก่อน
+          let sigResult: BacktestResult | null = null;
+          let sigName: string | null = null;
+          if (multiBtGraphSel && multiBtGraphSel.comboKey === activeComboKey) {
+            const mrow = multiBtResults?.find(
+              r => r.comboKey === multiBtGraphSel.comboKey && r.strategyId === multiBtGraphSel.strategyId
+            );
+            if (mrow) {
+              sigResult = mrow.result;
+              sigName = `${mrow.strategyName} · ${mrow.symbol}·${mrow.interval}`;
+            }
+          }
+          if (!sigResult && graphSignalStrategy) {
+            const sigItem = allBtResults?.find(r => r.strategyId === graphSignalStrategy) ?? null;
+            if (sigItem) { sigResult = sigItem.result; sigName = sigItem.name; }
+          }
           return (
-            <KlineGraph
-              klines={klines}
-              indicators={indicators}
-              btResult={btResult}
-              strategyId={strategyId}
-              signalResult={sigItem?.result ?? null}
-              signalName={sigItem?.name ?? null}
-            />
+            <div ref={chartScrollRef} className="scroll-mt-4">
+              <KlineGraph
+                klines={klines}
+                indicators={indicators}
+                btResult={btResult}
+                strategyId={strategyId}
+                signalResult={sigResult}
+                signalName={sigName}
+              />
+            </div>
           );
         })()}
 
@@ -1760,6 +1797,7 @@ export default function KlinesPage() {
                           <TableHead className="w-8 text-center">#</TableHead>
                           <TableHead>กลยุทธ์</TableHead>
                           <TableHead>คู่เหรียญ · ช่วง</TableHead>
+                          <TableHead className="text-center">ซื้อ/ขายในกราฟ</TableHead>
                           <TableHead className="text-right">P&L</TableHead>
                           <TableHead className="text-right">กำไร ($)</TableHead>
                           <TableHead className="text-right">Win</TableHead>
@@ -1800,6 +1838,21 @@ export default function KlinesPage() {
                                   <span className="text-muted-foreground"> · </span>
                                   <span className="font-mono text-muted-foreground">{row.interval}</span>
                                 </TableCell>
+                                <TableCell className="text-center" onClick={(e) => e.stopPropagation()}>
+                                  {(() => {
+                                    const isOnGraph = multiBtGraphSel?.comboKey === row.comboKey && multiBtGraphSel?.strategyId === row.strategyId;
+                                    return (
+                                      <Button
+                                        size="sm"
+                                        variant={isOnGraph ? "default" : "outline"}
+                                        className="h-6 px-2 text-[10px]"
+                                        onClick={() => showMultiBtOnGraph(row)}
+                                      >
+                                        {isOnGraph ? "● แสดงอยู่" : "แสดงในกราฟ"}
+                                      </Button>
+                                    );
+                                  })()}
+                                </TableCell>
                                 <TableCell className={`text-right tabular-nums font-semibold ${pnlColor(r.totalPnlPct)}`}>
                                   {r.totalPnlPct >= 0 ? "+" : ""}{r.totalPnlPct.toFixed(2)}%
                                 </TableCell>
@@ -1830,7 +1883,7 @@ export default function KlinesPage() {
                               </TableRow>
                               {isExpanded && (
                                 <TableRow>
-                                  <TableCell colSpan={12} className="p-0">
+                                  <TableCell colSpan={13} className="p-0">
                                     <div className="border-t bg-muted/20 px-4 py-3 space-y-2">
                                       {/* สรุปเงินจริง (USDT) */}
                                       <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
@@ -1861,9 +1914,9 @@ export default function KlinesPage() {
                                         size="sm"
                                         variant="outline"
                                         className="h-7 text-[10px]"
-                                        onClick={(e) => { e.stopPropagation(); selectCombo(row.comboKey); }}
+                                        onClick={(e) => { e.stopPropagation(); showMultiBtOnGraph(row); }}
                                       >
-                                        ดูกราฟ {row.symbol}·{row.interval}
+                                        📈 ดูกราฟ + สัญญาณ ซื้อ/ขาย {row.symbol}·{row.interval}
                                       </Button>
                                     </div>
                                   </TableCell>
