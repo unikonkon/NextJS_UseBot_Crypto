@@ -1,36 +1,36 @@
-# name: Crypto Signal Poll
+name: Crypto Signal Poll
 
-# # ─── Tick scheduler: ยิง /api/cron/scan ตามรอบเวลา ───────────────
-# # endpoint จะเลือกเฉพาะ bot ที่ "ถึงรอบ" (ตาม pollSec ใน Redis) มาดึงข้อมูล
-# # จึงตั้ง cron ให้ถี่ที่สุดที่ใช้ได้ (~5 นาที) แล้วให้ pollSec ของแต่ละ bot
-# # เป็นตัวคุมรอบจริง
-# #
-# # ก่อนใช้งาน ตั้ง 2 ค่าใน GitHub repo → Settings → Secrets and variables → Actions:
-# #   - Secret  VERCEL_APP_URL   เช่น https://your-app.vercel.app  (ไม่ต้องมี / ปิดท้าย)
-# #   - Secret  CRON_SECRET      ต้องตรงกับ env CRON_SECRET บน Vercel
-# #
-# # หมายเหตุ: GitHub Actions cron ยิงขั้นต่ำ ~ทุก 5 นาที และ "อาจดีเลย์ 3–10 นาที"
-# # ในชั่วโมงที่คนใช้เยอะ — การกันยิงซ้ำ (lastAlert) ใน Redis จะกันเตือนซ้ำให้เอง
+# ─── Tick scheduler: ยิง /api/cron/scan ตามรอบเวลา ───────────────
+# endpoint จะเลือกเฉพาะ bot ที่ "ถึงรอบ" (ตาม pollSec ใน Redis) มาดึงข้อมูล
+# จึงตั้ง cron ให้ถี่ที่สุดที่ใช้ได้ (~5 นาที) แล้วให้ pollSec ของแต่ละ bot
+# เป็นตัวคุมรอบจริง
+#
+# ก่อนใช้งาน ตั้ง 2 ค่าใน GitHub repo → Settings → Secrets and variables → Actions:
+#   - Secret  VERCEL_APP_URL   เช่น https://your-app.vercel.app  (ไม่ต้องมี / ปิดท้าย)
+#   - Secret  CRON_SECRET      ต้องตรงกับ env CRON_SECRET บน Vercel
+#
+# หมายเหตุ: GitHub Actions cron ยิงขั้นต่ำ ~ทุก 5 นาที และ "อาจดีเลย์ 3–10 นาที"
+# ในชั่วโมงที่คนใช้เยอะ — การกันยิงซ้ำ (lastAlert) ใน Redis จะกันเตือนซ้ำให้เอง
 
-# on:
-#   schedule:
-#     - cron: "*/5 * * * *" # ทุก 5 นาที (รอบ poll จริงคุมที่ pollSec ของแต่ละ bot)
-#   workflow_dispatch: {} # กดรันเองได้จากแท็บ Actions เพื่อทดสอบ
+on:
+  schedule:
+    - cron: "*/5 * * * *" # ทุก 5 นาที (รอบ poll จริงคุมที่ pollSec ของแต่ละ bot)
+  workflow_dispatch: {} # กดรันเองได้จากแท็บ Actions เพื่อทดสอบ
 
-# # กันรันซ้อนกันถ้ารอบก่อนยังไม่จบ
-# concurrency:
-#   group: signal-poll
-#   cancel-in-progress: false
+# กันรันซ้อนกันถ้ารอบก่อนยังไม่จบ
+concurrency:
+  group: signal-poll
+  cancel-in-progress: false
 
-# jobs:
-#   poll:
-#     runs-on: ubuntu-latest
-#     steps:
-#       - name: Trigger scan endpoint
-#         run: |
-#           code=$(curl -sS -o /tmp/out.json -w "%{http_code}" \
-#             -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
-#             "${{ secrets.VERCEL_APP_URL }}/api/cron/scan")
-#           echo "HTTP $code"
-#           cat /tmp/out.json
-#           test "$code" = "200"
+jobs:
+  poll:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger scan endpoint
+        run: |
+          code=$(curl -sS -o /tmp/out.json -w "%{http_code}" \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+            "${{ secrets.VERCEL_APP_URL }}/api/cron/scan")
+          echo "HTTP $code"
+          cat /tmp/out.json
+          test "$code" = "200"
