@@ -27,10 +27,22 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Trigger scan endpoint
+        env:
+          VERCEL_APP_URL: ${{ secrets.VERCEL_APP_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
         run: |
+          # เช็คว่าตั้ง secrets ครบก่อน — ถ้าไม่ครบให้ fail พร้อมข้อความที่อ่านง่าย
+          if [ -z "$VERCEL_APP_URL" ]; then
+            echo "::error::Secret VERCEL_APP_URL ยังไม่ได้ตั้งค่า (Settings → Secrets and variables → Actions)"
+            exit 1
+          fi
+          if [ -z "$CRON_SECRET" ]; then
+            echo "::error::Secret CRON_SECRET ยังไม่ได้ตั้งค่า (Settings → Secrets and variables → Actions)"
+            exit 1
+          fi
           code=$(curl -sS -o /tmp/out.json -w "%{http_code}" \
-            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
-            "${{ secrets.VERCEL_APP_URL }}/api/cron/scan")
+            -H "Authorization: Bearer $CRON_SECRET" \
+            "${VERCEL_APP_URL%/}/api/cron/scan")
           echo "HTTP $code"
           cat /tmp/out.json
           test "$code" = "200"
