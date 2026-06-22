@@ -21,12 +21,14 @@ export interface BotConfig {
   defaultPollSec: number; // รอบ polling เริ่มต้น (วินาที)
   limit: number; // จำนวนแท่งที่ดึงมาคำนวณ
   freshnessMin: number; // กรอบ "แท่งเพิ่งปิด" เป็นนาที
+  heartbeatMin: number; // รอบขั้นต่ำของ heartbeat สรุปสถานะ (นาที); 0 = ปิด
 }
 
 export const DEFAULT_BOT_CONFIG: BotConfig = {
   defaultPollSec: 1800,
   limit: 500,
   freshnessMin: 15,
+  heartbeatMin: 60,
 };
 
 // id แบบ composite — กันสร้างบอทซ้ำเมื่อ 4 ค่าหลักเหมือนกัน

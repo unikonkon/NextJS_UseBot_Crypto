@@ -465,13 +465,13 @@ async function handleConfig(i: Interaction): Promise<Response> {
   if (s.name === "show") {
     const cfg = await getConfig();
     return ephemeral(
-      `⚙️ ค่าปัจจุบัน:\n• defaultPollSec: \`${cfg.defaultPollSec}\`\n• limit: \`${cfg.limit}\`\n• freshnessMin: \`${cfg.freshnessMin}\``,
+      `⚙️ ค่าปัจจุบัน:\n• defaultPollSec: \`${cfg.defaultPollSec}\`\n• limit: \`${cfg.limit}\`\n• freshnessMin: \`${cfg.freshnessMin}\`\n• heartbeatMin: \`${cfg.heartbeatMin}\` (0 = ปิด)`,
     );
   }
   if (s.name === "set") {
     const key = String(optVal(s.options, "key") ?? "");
     const value = Number(optVal(s.options, "value"));
-    const allowed = ["defaultPollSec", "limit", "freshnessMin"];
+    const allowed = ["defaultPollSec", "limit", "freshnessMin", "heartbeatMin"];
     if (!allowed.includes(key) || !Number.isFinite(value)) {
       return ephemeral("❌ key/value ไม่ถูกต้อง");
     }

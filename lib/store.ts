@@ -20,6 +20,7 @@ export function isStoreConfigured(): boolean {
 const KEY_BOTS = "bot:bots"; // hash: field=botId → JSON Bot
 const KEY_CONFIG = "bot:config"; // string: JSON BotConfig
 const KEY_LAST_ALERT = "bot:lastAlert"; // hash: field=botId → "closeTime|signal"
+const KEY_LAST_HEARTBEAT = "bot:lastHeartbeat"; // hash: field=botId → timestamp(ms)
 
 type RedisArg = string | number;
 
@@ -104,6 +105,7 @@ export async function deleteBot(id: string): Promise<void> {
   await redis(["HDEL", KEY_BOTS, id]);
   try {
     await redis(["HDEL", KEY_LAST_ALERT, id]);
+    await redis(["HDEL", KEY_LAST_HEARTBEAT, id]);
   } catch {
     /* ignore */
   }
@@ -127,13 +129,33 @@ export async function setLastAlert(id: string, v: LastAlert): Promise<void> {
   await redis(["HSET", KEY_LAST_ALERT, id, `${v.closeTime}|${v.signal}`]);
 }
 
+// ─── lastHeartbeat (คุมรอบ heartbeat สรุปสถานะ) ──────────────────
+export async function getLastHeartbeat(id: string): Promise<number> {
+  if (!isStoreConfigured()) return 0;
+  const v = await redis<string | null>(["HGET", KEY_LAST_HEARTBEAT, id]);
+  return v ? Number(v) : 0;
+}
+
+export async function setLastHeartbeat(id: string, ts: number): Promise<void> {
+  await redis(["HSET", KEY_LAST_HEARTBEAT, id, String(ts)]);
+}
+
 // ─── Config (ค่า default ส่วนกลาง) ───────────────────────────────
 function envConfig(): BotConfig {
+  // heartbeatMin รองรับค่า 0 (=ปิด) จึงไม่ใช้ `|| default` ที่จะกลืน 0
+  const hbRaw = process.env.HEARTBEAT_MIN;
+  const heartbeatMin =
+    hbRaw !== undefined && hbRaw.trim() !== ""
+      ? Number(hbRaw)
+      : DEFAULT_BOT_CONFIG.heartbeatMin;
   return {
     defaultPollSec: DEFAULT_BOT_CONFIG.defaultPollSec,
     limit: Number(process.env.SCAN_LIMIT) || DEFAULT_BOT_CONFIG.limit,
     freshnessMin:
       Number(process.env.SIGNAL_FRESHNESS_MIN) || DEFAULT_BOT_CONFIG.freshnessMin,
+    heartbeatMin: Number.isFinite(heartbeatMin)
+      ? heartbeatMin
+      : DEFAULT_BOT_CONFIG.heartbeatMin,
   };
 }
 

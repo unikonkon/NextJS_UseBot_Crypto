@@ -5,6 +5,8 @@ import {
   upsertBot,
   getLastAlert,
   setLastAlert,
+  getLastHeartbeat,
+  setLastHeartbeat,
   getConfig,
 } from "@/lib/store";
 import { type Bot } from "@/lib/types/bot";
@@ -12,9 +14,10 @@ import {
   evaluateBots,
   isValidStrategy,
   type SignalCandidate,
+  type BotStatusRow,
 } from "@/lib/scanner";
 import { sendWebhookMessage } from "@/lib/discord/rest";
-import { signalEmbed } from "@/lib/discord/components";
+import { signalEmbed, heartbeatEmbed } from "@/lib/discord/components";
 import { bumpUsage } from "@/lib/usage";
 import type { StrategyId } from "@/lib/backtest";
 
@@ -95,7 +98,7 @@ export async function GET(request: NextRequest) {
 
   // 2) ประเมินสัญญาณ (จัดกลุ่ม symbol+interval ดึง klines ครั้งเดียวต่อกลุ่ม)
   const limit = Math.min(Math.max(cfg.limit, 100), 1000);
-  const { candidates, errors, groupsFetched } = await evaluateBots(
+  const { candidates, statuses, errors, groupsFetched } = await evaluateBots(
     due,
     cfg.freshnessMin,
     limit,
@@ -163,6 +166,78 @@ export async function GET(request: NextRequest) {
     }
   }
 
+  // 4.5) heartbeat — สรุปสถานะปัจจุบันของบอทที่ถึงรอบ (ส่งได้แม้ไม่มีสัญญาณพลิก)
+  //      คุมรอบด้วย heartbeatMin: มี store → throttle ราย bot ผ่าน Redis,
+  //      ไม่มี store → ใช้ clock-slot (ส่งเฉพาะรอบ cron แรกของแต่ละช่วง heartbeatMin)
+  let heartbeats = 0;
+  const heartbeatMin = cfg.heartbeatMin;
+  if (heartbeatMin > 0 && statuses.length > 0) {
+    const hbMs = heartbeatMin * 60_000;
+    const slotOk =
+      storeOn || Math.floor(now / 60_000) % heartbeatMin < 5; // tolerance รอบ cron ~5 นาที
+
+    // เลือกสถานะที่ถึงรอบ heartbeat
+    const eligible: BotStatusRow[] = [];
+    for (const s of statuses) {
+      if (!slotOk) break;
+      if (storeOn) {
+        try {
+          const last = await getLastHeartbeat(s.bot.id);
+          if (now - last < hbMs) continue;
+        } catch {
+          /* อ่านไม่ได้ก็ปล่อยให้ส่ง */
+        }
+      }
+      eligible.push(s);
+    }
+
+    // จัดกลุ่มตาม webhook แล้วส่งเป็น embed สรุป (≤25 fields ต่อ embed)
+    const hbByHook = new Map<string, BotStatusRow[]>();
+    for (const s of eligible) {
+      const hook = s.bot.webhookUrl || fallbackHook;
+      if (!hook) continue;
+      const arr = hbByHook.get(hook);
+      if (arr) arr.push(s);
+      else hbByHook.set(hook, [s]);
+    }
+
+    for (const [hook, list] of hbByHook) {
+      for (let k = 0; k < list.length; k += 25) {
+        const batch = list.slice(k, k + 25);
+        try {
+          await sendWebhookMessage(hook, {
+            username: "Crypto Signal Bot",
+            embeds: [
+              heartbeatEmbed(
+                batch.map((s) => ({
+                  symbol: s.bot.symbol,
+                  interval: s.bot.interval,
+                  strategyName: s.strategyName,
+                  state: s.state,
+                  price: s.price,
+                  lastFlipSignal: s.lastFlipSignal,
+                  lastFlipTime: s.lastFlipTime,
+                })),
+              ),
+            ],
+          });
+          heartbeats += batch.length;
+          if (storeOn) {
+            for (const s of batch) {
+              try {
+                await setLastHeartbeat(s.bot.id, now);
+              } catch {
+                /* ignore */
+              }
+            }
+          }
+        } catch (err) {
+          errors.push(`heartbeat: ${String(err)}`);
+        }
+      }
+    }
+  }
+
   // 5) อัปเดต lastPolledAt ของ bot จริงที่ถึงรอบ (ไม่ใช่ env fallback)
   if (storeOn && !usingEnvFallback) {
     for (const b of due) {
@@ -178,7 +253,7 @@ export async function GET(request: NextRequest) {
   // 6) นับ usage
   await bumpUsage("scanTicks");
   await bumpUsage("klineFetches", groupsFetched);
-  await bumpUsage("discordSends", sent);
+  await bumpUsage("discordSends", sent + heartbeats);
 
   return NextResponse.json({
     ok: true,
@@ -186,6 +261,7 @@ export async function GET(request: NextRequest) {
     due: due.length,
     candidates: candidates.length,
     sent,
+    heartbeats,
     errors,
   });
 }

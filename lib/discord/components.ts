@@ -42,6 +42,51 @@ export function signalEmbed(p: {
   };
 }
 
+// ─── embed heartbeat (สรุปสถานะปัจจุบันของบอทที่ถึงรอบ) ──────────
+// ส่งทุกรอบ poll เพื่อยืนยันว่า bot ยังทำงาน แม้แท่งล่าสุดจะไม่มีสัญญาณพลิก
+export function heartbeatEmbed(
+  rows: {
+    symbol: string;
+    interval: string;
+    strategyName: string;
+    state: "LONG" | "FLAT" | "NONE";
+    price: number;
+    lastFlipSignal: "BUY" | "SELL" | "HOLD" | null;
+    lastFlipTime: number | null;
+  }[],
+): Record<string, unknown> {
+  const stateIcon = (s: "LONG" | "FLAT" | "NONE") =>
+    s === "LONG" ? "🟢" : s === "FLAT" ? "🔴" : "⚪";
+  const stateLabel = (s: "LONG" | "FLAT" | "NONE") =>
+    s === "LONG" ? "ถือ (ขาขึ้น)" : s === "FLAT" ? "ออก (ขาลง)" : "ยังไม่มีสัญญาณ";
+
+  const fields = rows.slice(0, 25).map((r) => {
+    const flip =
+      r.lastFlipSignal && r.lastFlipTime
+        ? `${r.lastFlipSignal} · <t:${Math.floor(r.lastFlipTime / 1000)}:R>`
+        : "—";
+    return {
+      name: `${stateIcon(r.state)} ${r.symbol} (${r.interval})`,
+      value: [
+        `กลยุทธ์: ${r.strategyName}`,
+        `สถานะ: **${stateLabel(r.state)}**`,
+        `ราคา: \`${r.price}\``,
+        `พลิกล่าสุด: ${flip}`,
+      ].join("\n"),
+      inline: true,
+    };
+  });
+
+  return {
+    title: "💓 สรุปสถานะบอท (heartbeat)",
+    color: BLUE,
+    description: `กำลังทำงาน · ตรวจ ${rows.length} บอทรอบนี้`,
+    fields,
+    footer: { text: "สถานะปัจจุบันจากการรันอินดิเคเตอร์ใหม่ทุกรอบ" },
+    timestamp: new Date().toISOString(),
+  };
+}
+
 // ─── การ์ดควบคุม bot (embed + ปุ่ม) ─────────────────────────────
 function button(
   customId: string,

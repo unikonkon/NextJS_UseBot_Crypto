@@ -75,16 +75,38 @@ export interface PeekRow {
   strategyName: string;
 }
 
+// สถานะปัจจุบันของบอท (ใช้ทำ heartbeat สรุป — ส่งได้แม้แท่งล่าสุดเป็น HOLD)
+export type PositionState = "LONG" | "FLAT" | "NONE";
+
+export interface BotStatusRow {
+  bot: Bot;
+  state: PositionState; // ทิศ/โพสิชันปัจจุบัน (จากสัญญาณพลิกล่าสุดในชุดข้อมูล)
+  lastSignal: SignalAction; // สัญญาณของแท่งปิดล่าสุด (มักเป็น HOLD)
+  price: number;
+  closeTime: number; // closeTime ของแท่งปิดล่าสุด
+  lastFlipSignal: SignalAction | null; // สัญญาณพลิกล่าสุด (BUY/SELL) ที่เจอ
+  lastFlipTime: number | null; // closeTime ของแท่งที่เกิดการพลิกล่าสุด
+  strategyName: string;
+}
+
 // key จัดกลุ่ม: หลาย bot ที่ symbol+interval เดียวกัน ดึง klines ครั้งเดียว
 function groupKey(bot: Bot): string {
   return `${bot.symbol.toUpperCase()}|${bot.interval}`;
 }
 
-// คำนวณสัญญาณแท่งปิดล่าสุดของ bot จากชุด klines ที่ให้มา
-function lastSignal(
-  klines: KlineData[],
-  bot: Bot,
-): { signal: SignalAction; price: number; closeTime: number } | null {
+// รันอินดิเคเตอร์ใหม่ทุกครั้ง (computeAll ภายใน runBacktest) แล้วสรุป:
+//   - สัญญาณของแท่งปิดล่าสุด (ใช้ขา alert "พลิก")
+//   - สถานะ/โพสิชันปัจจุบัน จากสัญญาณพลิกล่าสุดในชุดข้อมูล (ใช้ขา heartbeat)
+interface BotAnalysis {
+  lastSignal: SignalAction;
+  price: number;
+  closeTime: number;
+  state: PositionState;
+  lastFlipSignal: SignalAction | null;
+  lastFlipTime: number | null;
+}
+
+function analyzeBot(klines: KlineData[], bot: Bot): BotAnalysis | null {
   if (klines.length < 2) return null;
   const { signals } = runBacktest(
     klines,
@@ -94,10 +116,27 @@ function lastSignal(
   const idx = signals.length - 1;
   const last = klines[idx];
   if (!last) return null;
+
+  // ไล่ย้อนหาสัญญาณพลิกล่าสุด (BUY/SELL) เพื่อสรุปทิศปัจจุบัน
+  let lastFlipSignal: SignalAction | null = null;
+  let lastFlipTime: number | null = null;
+  for (let i = idx; i >= 0; i--) {
+    if (signals[i] === "BUY" || signals[i] === "SELL") {
+      lastFlipSignal = signals[i];
+      lastFlipTime = klines[i].closeTime;
+      break;
+    }
+  }
+  const state: PositionState =
+    lastFlipSignal === "BUY" ? "LONG" : lastFlipSignal === "SELL" ? "FLAT" : "NONE";
+
   return {
-    signal: signals[idx],
+    lastSignal: signals[idx],
     price: Number(last.close),
     closeTime: last.closeTime,
+    state,
+    lastFlipSignal,
+    lastFlipTime,
   };
 }
 
@@ -128,18 +167,22 @@ async function fetchGroups(
   return { klinesByGroup, errors, groupsFetched: klinesByGroup.size };
 }
 
-// ใช้โดย /api/cron/scan — คืนเฉพาะสัญญาณ BUY/SELL บนแท่งที่ "เพิ่งปิด"
+// ใช้โดย /api/cron/scan — คืน 2 ชุดจากการรันอินดิเคเตอร์ครั้งเดียวกัน:
+//   - candidates: สัญญาณ BUY/SELL บนแท่งที่ "เพิ่งปิด" (ขา alert พลิก)
+//   - statuses:   สถานะปัจจุบันของทุกบอท (ขา heartbeat สรุป — รวมที่เป็น HOLD)
 export async function evaluateBots(
   bots: Bot[],
   freshnessMin: number,
   limit: number,
 ): Promise<{
   candidates: SignalCandidate[];
+  statuses: BotStatusRow[];
   errors: string[];
   groupsFetched: number;
 }> {
   const candidates: SignalCandidate[] = [];
-  if (!bots.length) return { candidates, errors: [], groupsFetched: 0 };
+  const statuses: BotStatusRow[] = [];
+  if (!bots.length) return { candidates, statuses, errors: [], groupsFetched: 0 };
 
   const { klinesByGroup, errors, groupsFetched } = await fetchGroups(bots, limit);
   const now = Date.now();
@@ -149,22 +192,37 @@ export async function evaluateBots(
     const klines = klinesByGroup.get(groupKey(bot));
     if (!klines) continue;
     try {
-      const r = lastSignal(klines, bot);
-      if (!r || r.signal === "HOLD") continue;
-      // เตือนเฉพาะแท่งที่ปิดไม่นาน (กันยิงสัญญาณเก่าตอนบอทเพิ่งเริ่ม)
+      const r = analyzeBot(klines, bot);
+      if (!r) continue;
+      const strategyName = strategyDisplayName(bot.strategyId);
+
+      // ขา heartbeat: เก็บสถานะปัจจุบันของทุกบอทที่ประเมินได้
+      statuses.push({
+        bot,
+        state: r.state,
+        lastSignal: r.lastSignal,
+        price: r.price,
+        closeTime: r.closeTime,
+        lastFlipSignal: r.lastFlipSignal,
+        lastFlipTime: r.lastFlipTime,
+        strategyName,
+      });
+
+      // ขา alert: เฉพาะแท่งล่าสุดที่ "พลิก" BUY/SELL และยังสด
+      if (r.lastSignal === "HOLD") continue;
       if (now - r.closeTime > freshMs) continue;
       candidates.push({
         bot,
-        signal: r.signal,
+        signal: r.lastSignal,
         price: r.price,
-        strategyName: strategyDisplayName(bot.strategyId),
+        strategyName,
         closeTime: r.closeTime,
       });
     } catch (err) {
       errors.push(`${bot.id}: ${String(err)}`);
     }
   }
-  return { candidates, errors, groupsFetched };
+  return { candidates, statuses, errors, groupsFetched };
 }
 
 // ใช้โดย /scan (manual) — คืนทุก bot รวม HOLD, ไม่กรอง freshness
@@ -180,11 +238,11 @@ export async function peekBots(
     const klines = klinesByGroup.get(groupKey(bot));
     if (!klines) continue;
     try {
-      const r = lastSignal(klines, bot);
+      const r = analyzeBot(klines, bot);
       if (!r) continue;
       rows.push({
         bot,
-        signal: r.signal,
+        signal: r.lastSignal,
         price: r.price,
         strategyName: strategyDisplayName(bot.strategyId),
       });
