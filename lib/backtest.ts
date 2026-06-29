@@ -18,14 +18,32 @@ export interface Trade {
   // ── Position sizing (เงินจริง — ตรรกะเดียวกับหน้า trading/Binance: qty = ทุน ÷ ราคา) ──
   // optional เพื่อให้ผู้สร้าง Trade แบบ synthetic ที่อื่น (discordBot/Gold) ยังใช้ได้
   qty?: number;          // จำนวนเหรียญที่ซื้อ (ปัด 8 ตำแหน่ง)
-  positionValue?: number; // เงิน USDT ที่ลงในไม้นี้ (qty × entryPrice)
+  positionValue?: number; // มูลค่าสัญญา (notional) USDT ที่เปิดในไม้นี้ (qty × entryPrice)
   feesUsd?: number;       // ค่าธรรมเนียมรวมสองขา (USDT)
   pnlUsd?: number;        // กำไร/ขาดทุนสุทธิเป็นเงิน (USDT)
   equityAfter?: number;   // เงินทุนคงเหลือหลังปิดไม้นี้ (USDT)
+  // ── Futures ──
+  side?: "long" | "short"; // ทิศทางของไม้ (default long สำหรับ spot)
+  marginUsd?: number;      // เงิน margin จริงที่ใช้ต่อไม้ (USDT) = notional ÷ leverage
 }
 
-// ── โหมดคิดขนาดการลงทุนต่อไม้ (Spot 1x, ไม่มี leverage) ──
+// ── โหมดคิดขนาดการลงทุนต่อไม้ ──
 export type SizingMode = "all_in" | "fixed" | "pct" | "risk";
+
+// ── ประเภทตลาด: Spot (1x, long-only) หรือ Futures (มี leverage + short ได้) ──
+export type MarketType = "spot" | "futures";
+
+// ── ทิศทางที่อนุญาตในโหมด Futures ──
+//   long  = เปิดเฉพาะ buy (ซื้อ)
+//   short = เปิดเฉพาะ sell (ขาย/short)
+//   both  = เปิดได้ทั้งสองทาง แบบกลับโพซิชัน (always in market)
+export type FuturesDirection = "long" | "short" | "both";
+
+// ── หน่วยวัดของ Stop Loss / Take Profit ──
+//   price_pct   = % ของราคาเหรียญ (ราคาวิ่งไปกี่ %)
+//   capital_pct = % ของทุน (margin) ที่ลงต่อไม้  → รวมผลของ leverage แล้ว
+//   usdt        = กำไร/ขาดทุนเป็นเงิน USDT ของไม้นั้น
+export type SlTpUnit = "price_pct" | "capital_pct" | "usdt";
 
 export interface SizingConfig {
   mode: SizingMode;
@@ -34,6 +52,17 @@ export interface SizingConfig {
   pctOfCapital?: number;  // mode "pct": % ของทุนปัจจุบันต่อไม้ (0–100)
   riskPct?: number;       // mode "risk": % ความเสี่ยงของทุนต่อไม้ (0–100)
   stopLossPct?: number;   // mode "risk": ระยะ stop loss เป็น % ของราคา (>0)
+  // ── Futures (optional; ถ้าไม่ระบุ = spot long-only 1x เหมือนเดิม) ──
+  market?: MarketType;        // "spot" (default) | "futures"
+  direction?: FuturesDirection; // default "long"
+  leverage?: number;          // เลเวอเรจ (>=1), ใช้เฉพาะ futures; default 1
+  // Stop Loss / Take Profit — เปิด/ปิดได้อิสระ ตรวจที่ราคาปิด (close)
+  slEnabled?: boolean;
+  slUnit?: SlTpUnit;
+  slValue?: number;
+  tpEnabled?: boolean;
+  tpUnit?: SlTpUnit;
+  tpValue?: number;
 }
 
 export const DEFAULT_SIZING: SizingConfig = {
@@ -43,6 +72,9 @@ export const DEFAULT_SIZING: SizingConfig = {
   pctOfCapital: 10,
   riskPct: 2,
   stopLossPct: 2,
+  market: "spot",
+  direction: "long",
+  leverage: 1,
 };
 
 export interface BacktestResult {
@@ -72,6 +104,10 @@ export interface BacktestResult {
   totalFeesUsd?: number;    // ค่าธรรมเนียมรวม (USDT)
   maxDrawdownUsd?: number;  // drawdown สูงสุดเป็นเงิน (USDT)
   equityCurveUsd?: number[]; // ทุนคงเหลือ (USDT) ที่แต่ละแท่ง
+  // ── Futures metadata (optional) ──
+  market?: MarketType;        // "spot" | "futures"
+  direction?: FuturesDirection; // ทิศทางที่ใช้ (futures)
+  leverage?: number;          // เลเวอเรจที่ใช้
 }
 
 export type StrategyId =
@@ -730,19 +766,23 @@ export function runBacktest(
 
   const closes = klines.map(k => +k.close);
   const trades: Trade[] = [];
-  let inPosition = false;
-  let entryIdx = 0;
-  let entryPrice = 0;
-  let entryReason = "";
 
-  // ── Position sizing — เงินทุนเดินเป็นเงินจริง (USDT), Spot 1x ──
+  // ── Position sizing — เงินทุนเดินเป็นเงินจริง (USDT) ──
   const initialCapital = sizing.initialCapital > 0 ? sizing.initialCapital : 1000;
   let equity = initialCapital; // ทุนคงเหลือปัจจุบัน
   const round8 = (x: number) => +x.toFixed(8); // ปัด qty 8 ตำแหน่ง (เหมือนหน้า trading/Binance)
 
-  // เลือกเงินที่จะลงในไม้นี้ตามโหมด แล้วได้ qty = เงินที่ลง ÷ ราคาเข้า
+  // ── โหมดตลาด/ทิศทาง/เลเวอเรจ (default = spot long-only 1x เหมือนเดิม) ──
+  const isFutures = sizing.market === "futures";
+  const leverage = isFutures ? Math.max(1, sizing.leverage ?? 1) : 1;
+  const direction: FuturesDirection = isFutures ? (sizing.direction ?? "long") : "long";
+  // SL/TP ใช้เฉพาะเมื่อเปิดใช้งาน (ตรวจที่ราคาปิดเท่านั้น)
+  const slOn = !!sizing.slEnabled && (sizing.slValue ?? 0) > 0;
+  const tpOn = !!sizing.tpEnabled && (sizing.tpValue ?? 0) > 0;
+
+  // เลือก "เงิน margin" ที่จะลงในไม้นี้ตามโหมด — notional = margin × leverage, qty = notional ÷ ราคาเข้า
   const planEntry = (price: number) => {
-    if (equity <= 0 || price <= 0) return { qty: 0, positionValue: 0 };
+    if (equity <= 0 || price <= 0) return { qty: 0, notional: 0, margin: 0 };
     let target: number;
     switch (sizing.mode) {
       case "all_in":
@@ -763,63 +803,125 @@ export function runBacktest(
       default:
         target = equity;
     }
-    const positionValueWanted = Math.min(target, equity); // Spot: ลงเกินทุนไม่ได้
-    const qty = round8(positionValueWanted / price);
-    return { qty, positionValue: qty * price };
+    const margin = Math.min(target, equity); // margin ลงเกินทุนคงเหลือไม่ได้
+    const notional = margin * leverage;      // มูลค่าสัญญา (spot: leverage = 1)
+    const qty = round8(notional / price);
+    return { qty, notional: qty * price, margin };
   };
 
-  // ปิดไม้: คิดกำไร/ขาดทุนเป็นเงินจริง + อัปเดตทุน แล้ว push trade
+  // ปิดไม้: คิดกำไร/ขาดทุนเป็นเงินจริง (รองรับ long/short + leverage) + อัปเดตทุน แล้ว push trade
   const closeTrade = (
-    qty: number, positionValue: number,
+    side: "long" | "short",
+    qty: number, notional: number, margin: number,
+    eIdx: number, ePrice: number, eReason: string,
     exitIdx: number, exitPrice: number, reason: string,
   ) => {
-    const grossPnlPct = ((exitPrice - entryPrice) / entryPrice) * 100;
-    const netPnlPct = grossPnlPct - feesPct * 2; // entry + exit fee (%)
+    const dir = side === "long" ? 1 : -1;
+    const grossPnlPct = dir * ((exitPrice - ePrice) / ePrice) * 100; // % การวิ่งของราคา (ตามทิศ)
     const exitValue = qty * exitPrice;
-    const feesUsd = (positionValue + exitValue) * (feesPct / 100); // ค่าธรรมเนียมสองขา
-    const pnlUsd = (exitValue - positionValue) - feesUsd;
+    const feesUsd = (notional + exitValue) * (feesPct / 100); // ค่าธรรมเนียมสองขา (คิดบน notional)
+    let pnlUsd = dir * (exitValue - notional) - feesUsd;       // กำไร/ขาดทุนเป็นเงิน (USDT)
+    // Futures (isolated margin): เสียได้ไม่เกิน margin ที่วางไว้ — จำลอง liquidation กันทุนติดลบ
+    if (isFutures && pnlUsd < -margin) pnlUsd = -margin;
     equity += pnlUsd;
+    // pnlPct = ผลตอบแทนต่อ margin ที่ลง (รวมผลของ leverage แล้ว) — สำหรับ spot จะ ≈ % ราคาเดิม
+    const netPnlPct = margin > 0 ? (pnlUsd / margin) * 100 : grossPnlPct - feesPct * 2;
     trades.push({
-      entryIdx,
-      entryTime: klines[entryIdx].openTime,
-      entryPrice,
+      entryIdx: eIdx,
+      entryTime: klines[eIdx].openTime,
+      entryPrice: ePrice,
       exitIdx,
       exitTime: klines[exitIdx].openTime,
       exitPrice,
-      pnl: exitPrice - entryPrice,
+      pnl: dir * (exitPrice - ePrice),
       pnlPct: netPnlPct,
-      bars: exitIdx - entryIdx,
-      reason,
+      bars: exitIdx - eIdx,
+      reason: `${eReason}${reason}`,
       qty,
-      positionValue,
+      positionValue: notional,
       feesUsd,
       pnlUsd,
       equityAfter: equity,
+      side,
+      marginUsd: margin,
     });
   };
 
-  let curQty = 0;
-  let curPositionValue = 0;
+  // โพซิชันที่เปิดอยู่
+  type OpenPos = {
+    side: "long" | "short";
+    entryIdx: number; entryPrice: number;
+    qty: number; notional: number; margin: number; reason: string;
+  };
+
+  // สร้างโพซิชันใหม่ (คืน null ถ้าทุนหมด/เปิดไม่ได้)
+  const buildPos = (side: "long" | "short", i: number, price: number, reason: string): OpenPos | null => {
+    const plan = planEntry(price);
+    if (plan.qty <= 0) return null;
+    return { side, entryIdx: i, entryPrice: price, qty: plan.qty, notional: plan.notional, margin: plan.margin, reason };
+  };
+
+  // ปิดโพซิชัน p ที่ราคา exitPrice
+  const doClose = (p: OpenPos, exitIdx: number, exitPrice: number, reason: string) => {
+    closeTrade(p.side, p.qty, p.notional, p.margin, p.entryIdx, p.entryPrice, p.reason, exitIdx, exitPrice, reason);
+  };
+
+  // ตรวจ SL/TP ที่ราคาปิด — คืนค่าเหตุผลที่ต้องปิด ถ้าไม่ถึงคืน null
+  const checkSlTp = (p: OpenPos, price: number): string | null => {
+    if (!slOn && !tpOn) return null;
+    const dir = p.side === "long" ? 1 : -1;
+    const grossPnlUsd = dir * p.qty * (price - p.entryPrice);   // ก่อนหักค่าธรรมเนียม
+    const pricePct = dir * ((price - p.entryPrice) / p.entryPrice) * 100;
+    const capitalPct = p.margin > 0 ? (grossPnlUsd / p.margin) * 100 : 0;
+    const metric = (unit: SlTpUnit) =>
+      unit === "price_pct" ? pricePct : unit === "capital_pct" ? capitalPct : grossPnlUsd;
+    // SL ก่อน (อนุรักษ์นิยม) แล้วค่อย TP
+    if (slOn && metric(sizing.slUnit ?? "price_pct") <= -(sizing.slValue ?? 0)) return " → Stop Loss";
+    if (tpOn && metric(sizing.tpUnit ?? "price_pct") >= (sizing.tpValue ?? 0)) return " → Take Profit";
+    return null;
+  };
+
+  let pos: OpenPos | null = null;
 
   // Generate trades
   for (let i = 0; i < klines.length; i++) {
-    if (!inPosition && signals[i] === "BUY") {
-      inPosition = true;
-      entryIdx = i;
-      entryPrice = closes[i];
-      entryReason = "BUY signal";
-      const plan = planEntry(entryPrice);
-      curQty = plan.qty;
-      curPositionValue = plan.positionValue;
-    } else if (inPosition && signals[i] === "SELL") {
-      closeTrade(curQty, curPositionValue, i, closes[i], `${entryReason} → SELL signal`);
-      inPosition = false;
+    const price = closes[i];
+
+    // 1) ตรวจ SL/TP ที่ราคาปิดก่อน
+    if (pos) {
+      const exitReason = checkSlTp(pos, price);
+      if (exitReason) {
+        doClose(pos, i, price, exitReason);
+        pos = null;
+        continue; // ปิดด้วย SL/TP แล้ว ไม่เปิดไม้ใหม่ในแท่งเดียวกัน
+      }
+    }
+
+    const sig = signals[i];
+
+    // 2) จัดการสัญญาณตามทิศทางที่เลือก
+    if (direction === "long") {
+      if (!pos && sig === "BUY") pos = buildPos("long", i, price, "BUY signal");
+      else if (pos && sig === "SELL") { doClose(pos, i, price, " → SELL signal"); pos = null; }
+    } else if (direction === "short") {
+      if (!pos && sig === "SELL") pos = buildPos("short", i, price, "SELL signal");
+      else if (pos && sig === "BUY") { doClose(pos, i, price, " → BUY signal (cover)"); pos = null; }
+    } else {
+      // both — กลับโพซิชัน (always in market)
+      if (sig === "BUY" && (!pos || pos.side === "short")) {
+        if (pos) doClose(pos, i, price, " → reverse to long");
+        pos = buildPos("long", i, price, "BUY signal");
+      } else if (sig === "SELL" && (!pos || pos.side === "long")) {
+        if (pos) doClose(pos, i, price, " → reverse to short");
+        pos = buildPos("short", i, price, "SELL signal");
+      }
     }
   }
 
   // Close any open position at last bar
-  if (inPosition) {
-    closeTrade(curQty, curPositionValue, klines.length - 1, closes[closes.length - 1], `${entryReason} → Force close (end)`);
+  if (pos) {
+    doClose(pos, klines.length - 1, closes[closes.length - 1], " → Force close (end)");
+    pos = null;
   }
 
   // Stats
@@ -844,7 +946,7 @@ export function runBacktest(
   let curEquityUsd = initialCapital;
   let tradeIdx = 0;
   for (let i = 0; i < klines.length; i++) {
-    if (tradeIdx < trades.length && i === trades[tradeIdx].exitIdx) {
+    while (tradeIdx < trades.length && i === trades[tradeIdx].exitIdx) {
       cumPnl += trades[tradeIdx].pnlPct;
       curEquityUsd = trades[tradeIdx].equityAfter ?? curEquityUsd;
       tradeIdx++;
@@ -912,5 +1014,8 @@ export function runBacktest(
     totalFeesUsd,
     maxDrawdownUsd: maxDDUsd,
     equityCurveUsd,
+    market: isFutures ? "futures" : "spot",
+    direction,
+    leverage,
   };
 }

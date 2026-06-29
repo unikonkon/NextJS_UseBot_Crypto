@@ -16,6 +16,9 @@ import {
   type Trade,
   type SizingMode,
   type SizingConfig,
+  type MarketType,
+  type FuturesDirection,
+  type SlTpUnit,
 } from "@/lib/backtest";
 import { Card, CardHeader, CardTitle, CardDescription, CardContent, CardAction } from "@/components/ui/card";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem, SelectGroup, SelectLabel } from "@/components/ui/select";
@@ -501,6 +504,16 @@ export default function KlinesPage() {
   const [pctOfCapital, setPctOfCapital] = useState("10");       // mode pct: % ของทุน/ไม้
   const [riskPct, setRiskPct] = useState("2");                  // mode risk: % เสี่ยง/ไม้
   const [stopLossPct, setStopLossPct] = useState("2");          // mode risk: ระยะ SL %
+  // ── Futures (Spot 1x = ค่าเริ่มต้น) ──
+  const [marketType, setMarketType] = useState<MarketType>("spot");
+  const [futuresDirection, setFuturesDirection] = useState<FuturesDirection>("both");
+  const [leverage, setLeverage] = useState("3");
+  const [slEnabled, setSlEnabled] = useState(false);
+  const [slUnit, setSlUnit] = useState<SlTpUnit>("price_pct");
+  const [slValue, setSlValue] = useState("2");
+  const [tpEnabled, setTpEnabled] = useState(false);
+  const [tpUnit, setTpUnit] = useState<SlTpUnit>("price_pct");
+  const [tpValue, setTpValue] = useState("4");
   const sizing = useMemo<SizingConfig>(() => ({
     mode: sizingMode,
     initialCapital: parseFloat(initialCapital) || 1000,
@@ -508,7 +521,17 @@ export default function KlinesPage() {
     pctOfCapital: parseFloat(pctOfCapital) || 10,
     riskPct: parseFloat(riskPct) || 2,
     stopLossPct: parseFloat(stopLossPct) || 2,
-  }), [sizingMode, initialCapital, fixedAmount, pctOfCapital, riskPct, stopLossPct]);
+    market: marketType,
+    direction: futuresDirection,
+    leverage: Math.max(1, parseFloat(leverage) || 1),
+    slEnabled,
+    slUnit,
+    slValue: parseFloat(slValue) || 0,
+    tpEnabled,
+    tpUnit,
+    tpValue: parseFloat(tpValue) || 0,
+  }), [sizingMode, initialCapital, fixedAmount, pctOfCapital, riskPct, stopLossPct,
+       marketType, futuresDirection, leverage, slEnabled, slUnit, slValue, tpEnabled, tpUnit, tpValue]);
   const [btResult, setBtResult] = useState<BacktestResult | null>(null);
   const [btRunning, setBtRunning] = useState(false);
   const [allBtResults, setAllBtResults] = useState<{ strategyId: StrategyId; name: string; result: BacktestResult }[] | null>(null);
@@ -1634,12 +1657,77 @@ export default function KlinesPage() {
         {(klines.length > 0 || loadedCombos.size > 0 || csvFiles.length > 0) && (
           <Card size="sm" className="ring-1 ring-primary/15">
             <CardHeader className="border-b">
-              <CardTitle>การลงทุน (เงินจริง · Spot 1x)</CardTitle>
+              <CardTitle>
+                การลงทุน (เงินจริง · {marketType === "futures"
+                  ? `Futures ${Math.max(1, parseFloat(leverage) || 1)}x`
+                  : "Spot 1x"})
+              </CardTitle>
               <CardDescription>
-                ตั้งค่าก่อนรันทดสอบย้อนหลังทุกแบบ — qty = เงินที่ลง ÷ ราคาเข้า (ปัด 8 ตำแหน่ง) · ใช้กับทั้ง 3 การทดสอบด้านล่าง
+                ตั้งค่าก่อนรันทดสอบย้อนหลังทุกแบบ — qty = มูลค่าสัญญา ÷ ราคาเข้า (ปัด 8 ตำแหน่ง) · ใช้กับทั้ง 3 การทดสอบด้านล่าง
               </CardDescription>
             </CardHeader>
-            <CardContent className="pt-3 space-y-2.5">
+            <CardContent className="pt-3 space-y-3">
+              {/* ── ประเภทตลาด: Spot / Futures ── */}
+              <div className="space-y-1">
+                <p className="text-[11px] text-muted-foreground">ประเภทตลาด</p>
+                <div className="flex flex-wrap gap-1.5">
+                  {([
+                    { id: "spot", name: "Spot 1x" },
+                    { id: "futures", name: "Futures" },
+                  ] as { id: MarketType; name: string }[]).map(m => (
+                    <Button
+                      key={m.id}
+                      variant={marketType === m.id ? "default" : "outline"}
+                      size="sm"
+                      className={`text-[11px] h-8 px-3 ${marketType === m.id ? "" : "text-muted-foreground hover:text-foreground"}`}
+                      onClick={() => {
+                        setMarketType(m.id);
+                        // Futures รองรับเฉพาะ ทุนทั้งก้อน / เงินคงที่
+                        if (m.id === "futures" && sizingMode !== "all_in" && sizingMode !== "fixed") setSizingMode("all_in");
+                        setBtResult(null);
+                      }}
+                    >
+                      {m.name}
+                    </Button>
+                  ))}
+                </div>
+              </div>
+
+              {/* ── Futures: ทิศทาง + leverage ── */}
+              {marketType === "futures" && (
+                <div className="flex flex-wrap items-end gap-3 rounded-lg border border-amber-500/25 bg-amber-500/5 p-2.5">
+                  <div className="space-y-1">
+                    <p className="text-[11px] text-muted-foreground">ทิศทาง</p>
+                    <div className="flex flex-wrap gap-1.5">
+                      {([
+                        { id: "long", name: "Buy (Long)" },
+                        { id: "short", name: "Sell (Short)" },
+                        { id: "both", name: "Buy & Sell" },
+                      ] as { id: FuturesDirection; name: string }[]).map(d => (
+                        <Button
+                          key={d.id}
+                          variant={futuresDirection === d.id ? "default" : "outline"}
+                          size="sm"
+                          className={`text-[11px] h-8 px-3 ${futuresDirection === d.id ? "" : "text-muted-foreground hover:text-foreground"}`}
+                          onClick={() => { setFuturesDirection(d.id); setBtResult(null); }}
+                        >
+                          {d.name}
+                        </Button>
+                      ))}
+                    </div>
+                  </div>
+                  <Field label="Leverage (x)">
+                    <Input type="number" step="1" min="1" value={leverage} onChange={e => { setLeverage(e.target.value); setBtResult(null); }} className="w-20" />
+                  </Field>
+                  <p className="text-[10px] text-muted-foreground max-w-[16rem]">
+                    {futuresDirection === "long" && "เปิดเฉพาะ Long: BUY เข้า / SELL ออก"}
+                    {futuresDirection === "short" && "เปิดเฉพาะ Short: SELL เข้า / BUY ออก"}
+                    {futuresDirection === "both" && "กลับโพซิชันทุกสัญญาณ (always in market)"}
+                  </p>
+                </div>
+              )}
+
+              {/* ── ทุน + ค่าธรรมเนียม + โหมดคิดขนาดไม้ ── */}
               <div className="flex flex-wrap items-end gap-3">
                 <Field label="ทุนเริ่มต้น (USDT)">
                   <Input type="number" step="any" value={initialCapital} onChange={e => { setInitialCapital(e.target.value); setBtResult(null); }} className="w-28" />
@@ -1648,14 +1736,17 @@ export default function KlinesPage() {
                   <Input type="number" step="0.01" value={feesPct} onChange={e => { setFeesPct(e.target.value); setBtResult(null); }} className="w-20" />
                 </Field>
                 <div className="space-y-1">
-                  <p className="text-[11px] text-muted-foreground">โหมดคิดขนาดไม้</p>
+                  <p className="text-[11px] text-muted-foreground">โหมดคิดขนาดไม้{marketType === "futures" ? " (margin/ไม้)" : ""}</p>
                   <div className="flex flex-wrap gap-1.5">
-                    {([
+                    {(([
                       { id: "all_in", name: "ทุนทั้งก้อน" },
                       { id: "fixed", name: "เงินคงที่/ไม้" },
                       { id: "pct", name: "% ของทุน" },
                       { id: "risk", name: "% ความเสี่ยง" },
-                    ] as { id: SizingMode; name: string }[]).map(m => (
+                    ] as { id: SizingMode; name: string }[])
+                      // Futures: รองรับเฉพาะ ทุนทั้งก้อน / เงินคงที่
+                      .filter(m => marketType !== "futures" || m.id === "all_in" || m.id === "fixed")
+                    ).map(m => (
                       <Button
                         key={m.id}
                         variant={sizingMode === m.id ? "default" : "outline"}
@@ -1669,7 +1760,7 @@ export default function KlinesPage() {
                   </div>
                 </div>
                 {sizingMode === "fixed" && (
-                  <Field label="เงินต่อไม้ (USDT)">
+                  <Field label={marketType === "futures" ? "Margin/ไม้ (USDT)" : "เงินต่อไม้ (USDT)"}>
                     <Input type="number" step="any" value={fixedAmount} onChange={e => { setFixedAmount(e.target.value); setBtResult(null); }} className="w-24" />
                   </Field>
                 )}
@@ -1690,11 +1781,31 @@ export default function KlinesPage() {
                 )}
               </div>
               <p className="text-[10px] text-muted-foreground">
-                {sizingMode === "all_in" && "ทุกไม้ลงเงินทั้งหมดที่มี (ทบต้น/compound)"}
-                {sizingMode === "fixed" && "ทุกไม้ลงเงินเท่ากันคงที่ (จำกัดไม่เกินทุนคงเหลือ)"}
+                {sizingMode === "all_in" && (marketType === "futures"
+                  ? `ทุกไม้ใช้ margin = ทุนทั้งหมด → มูลค่าสัญญา = ทุน × ${Math.max(1, parseFloat(leverage) || 1)} (ทบต้น/compound)`
+                  : "ทุกไม้ลงเงินทั้งหมดที่มี (ทบต้น/compound)")}
+                {sizingMode === "fixed" && (marketType === "futures"
+                  ? `ทุกไม้ใช้ margin คงที่ → มูลค่าสัญญา = margin × ${Math.max(1, parseFloat(leverage) || 1)} (จำกัดไม่เกินทุนคงเหลือ)`
+                  : "ทุกไม้ลงเงินเท่ากันคงที่ (จำกัดไม่เกินทุนคงเหลือ)")}
                 {sizingMode === "pct" && "ลงเป็น % ของทุนปัจจุบันทุกไม้ (ทบต้นแบบเปอร์เซ็นต์)"}
                 {sizingMode === "risk" && "เสี่ยงเป็น % ของทุนต่อไม้ → ขนาดไม้ = เงินเสี่ยง ÷ ระยะ SL (จำกัดไม่เกินทุน)"}
               </p>
+
+              {/* ── Stop Loss / Take Profit (เปิด/ปิดอิสระ · ตรวจที่ราคาปิด) ── */}
+              <div className="grid gap-2 sm:grid-cols-2">
+                <SlTpRow
+                  kind="sl"
+                  enabled={slEnabled} setEnabled={v => { setSlEnabled(v); setBtResult(null); }}
+                  unit={slUnit} setUnit={u => { setSlUnit(u); setBtResult(null); }}
+                  value={slValue} setValue={v => { setSlValue(v); setBtResult(null); }}
+                />
+                <SlTpRow
+                  kind="tp"
+                  enabled={tpEnabled} setEnabled={v => { setTpEnabled(v); setBtResult(null); }}
+                  unit={tpUnit} setUnit={u => { setTpUnit(u); setBtResult(null); }}
+                  value={tpValue} setValue={v => { setTpValue(v); setBtResult(null); }}
+                />
+              </div>
             </CardContent>
           </Card>
         )}
@@ -3301,6 +3412,60 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
   );
 }
 
+// หน่วยวัด Stop Loss / Take Profit
+const SLTP_UNITS: { id: SlTpUnit; name: string }[] = [
+  { id: "price_pct", name: "% ราคาเหรียญ" },
+  { id: "capital_pct", name: "% ของทุน/ไม้" },
+  { id: "usdt", name: "USDT" },
+];
+
+// แถวตั้งค่า Stop Loss หรือ Take Profit — เปิด/ปิด + เลือกหน่วย + ใส่ค่า
+function SlTpRow({
+  kind, enabled, setEnabled, unit, setUnit, value, setValue,
+}: {
+  kind: "sl" | "tp";
+  enabled: boolean; setEnabled: (v: boolean) => void;
+  unit: SlTpUnit; setUnit: (u: SlTpUnit) => void;
+  value: string; setValue: (v: string) => void;
+}) {
+  const isSl = kind === "sl";
+  const title = isSl ? "Stop Loss" : "Take Profit";
+  const borderCls = !enabled
+    ? "border-border/60"
+    : isSl ? "border-red-500/40 bg-red-500/5" : "border-emerald-500/40 bg-emerald-500/5";
+  return (
+    <div className={`rounded-lg border p-2.5 transition-colors ${borderCls}`}>
+      <label className="flex items-center gap-2 cursor-pointer select-none">
+        <input type="checkbox" checked={enabled} onChange={e => setEnabled(e.target.checked)} className="h-3.5 w-3.5 accent-current" />
+        <span className={`text-xs font-medium ${enabled ? (isSl ? "text-red-500" : "text-emerald-500") : "text-muted-foreground"}`}>{title}</span>
+      </label>
+      {enabled && (
+        <div className="mt-2 flex flex-wrap items-end gap-2">
+          <Field label="ค่า">
+            <Input type="number" step="any" value={value} onChange={e => setValue(e.target.value)} className="w-24" />
+          </Field>
+          <div className="space-y-1">
+            <p className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">หน่วย</p>
+            <div className="flex flex-wrap gap-1">
+              {SLTP_UNITS.map(u => (
+                <Button
+                  key={u.id}
+                  variant={unit === u.id ? "default" : "outline"}
+                  size="sm"
+                  className={`text-[10px] h-7 px-2 ${unit === u.id ? "" : "text-muted-foreground hover:text-foreground"}`}
+                  onClick={() => setUnit(u.id)}
+                >
+                  {u.name}
+                </Button>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function StepLabel({ num, text }: { num: number; text: string }) {
   return (
     <div className="flex items-center gap-2 mb-2">
@@ -3630,6 +3795,11 @@ function BacktestResults({ result }: { result: BacktestResult }) {
   const totalFeesUsd = result.totalFeesUsd ?? 0;
   const maxDrawdownUsd = result.maxDrawdownUsd ?? 0;
   const sizingLabel = SIZING_MODE_LABELS[result.sizingMode ?? "all_in"];
+  const isFut = result.market === "futures";
+  const marketLabel = isFut ? `Futures ${result.leverage ?? 1}x` : "Spot 1x";
+  const dirLabel = isFut
+    ? (result.direction === "short" ? " · Short" : result.direction === "both" ? " · Buy&Sell" : " · Long")
+    : "";
   const fmtUsd = (n: number) => `${n >= 0 ? "" : "-"}${Math.abs(n).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
   return (
@@ -3637,7 +3807,7 @@ function BacktestResults({ result }: { result: BacktestResult }) {
       {/* สรุปเงินจริง (USDT) */}
       <div className="rounded-lg border border-border/60 bg-muted/20 p-3">
         <div className="mb-2 flex items-center justify-between">
-          <p className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">สรุปเงินจริง (USDT · Spot 1x)</p>
+          <p className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">สรุปเงินจริง (USDT · {marketLabel}{dirLabel})</p>
           <span className="text-[10px] text-muted-foreground">โหมด: {sizingLabel}</span>
         </div>
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
