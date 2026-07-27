@@ -1197,6 +1197,9 @@ export default function KlinesPage() {
             <Button variant="outline" size="sm" className="border border-indigo-500/30 bg-indigo-500/10 text-[11px] font-medium text-indigo-400 hover:bg-indigo-500/20">
               <Link href="/discordBot">Discord Bot</Link>
             </Button>
+            <Button variant="outline" size="sm" className="border border-emerald-500/30 bg-emerald-500/10 text-[11px] font-medium text-emerald-400 hover:bg-emerald-500/20">
+              <Link href="/klines/mobile">📱 SMC Scanner</Link>
+            </Button>
           </div>
 
           <div className="flex items-center gap-2">
