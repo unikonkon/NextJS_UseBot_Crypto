@@ -1183,14 +1183,18 @@ export default function KlinesPage() {
 
   return (
     <div className="min-h-screen bg-background text-foreground">
-      <div className="mx-auto max-w-[1400px] px-4 py-6 space-y-4">
-        {/* Header */}
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-4">
-            <div>
-              <h1 className="text-lg font-semibold tracking-tight">Binance Klines & Backtest</h1>
-              <p className="text-xs text-muted-foreground">ตัวชี้วัดการเทรด + ทดสอบกลยุทธ์ย้อนหลังพร้อมกำไร/ขาดทุน</p>
+      <div className="mx-auto max-w-[1400px] space-y-4 px-3 py-4 sm:px-4 sm:py-6">
+        {/* Header — จอแคบเรียงเป็นแถวเดียวไม่พอ ต้องแยกชั้น: ชื่อ+ธีม / ปุ่มนำทาง / สถานะ */}
+        <div className="space-y-2">
+          <div className="flex items-start justify-between gap-2">
+            <div className="min-w-0">
+              <h1 className="text-base font-semibold tracking-tight sm:text-lg">Binance Klines & Backtest</h1>
+              <p className="text-[11px] text-muted-foreground sm:text-xs">ตัวชี้วัดการเทรด + ทดสอบกลยุทธ์ย้อนหลังพร้อมกำไร/ขาดทุน</p>
             </div>
+            <ThemeToggle />
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
             <Button variant="outline" size="sm" className="border border-yellow-500/30 bg-yellow-500/10 text-[11px] font-medium text-yellow-500 hover:bg-yellow-500/20">
               <Link href="/trading/Binance">Binance Trading</Link>
             </Button>
@@ -1200,18 +1204,17 @@ export default function KlinesPage() {
             <Button variant="outline" size="sm" className="border border-emerald-500/30 bg-emerald-500/10 text-[11px] font-medium text-emerald-400 hover:bg-emerald-500/20">
               <Link href="/klines/mobile">📱 SMC Scanner</Link>
             </Button>
-          </div>
 
-          <div className="flex items-center gap-2">
-            {lastFetch && (
-              <Badge variant="outline" className="text-[10px] text-muted-foreground">
-                ล่าสุด: {lastFetch.toLocaleTimeString()}
-              </Badge>
-            )}
-            {klines.length > 0 && (
-              <Badge variant="secondary">{klines.length.toLocaleString()} แท่งเทียน</Badge>
-            )}
-            <ThemeToggle />
+            <div className="ml-auto flex items-center gap-2">
+              {lastFetch && (
+                <Badge variant="outline" className="text-[10px] text-muted-foreground">
+                  ล่าสุด: {lastFetch.toLocaleTimeString()}
+                </Badge>
+              )}
+              {klines.length > 0 && (
+                <Badge variant="secondary">{klines.length.toLocaleString()} แท่งเทียน</Badge>
+              )}
+            </div>
           </div>
         </div>
         <Separator />
@@ -1245,13 +1248,13 @@ export default function KlinesPage() {
           </CardHeader>
           <CardContent className="space-y-4">
             {/* Step 1: เลือกคู่เหรียญ */}
-            <div className="flex flex-wrap gap-10 items-start">
+            <div className="flex flex-wrap items-start gap-4 sm:gap-10 [&>div]:min-w-0 [&>div]:max-w-full">
               <div>
                 <StepLabel num={1} text="เลือกคู่เหรียญ" />
                 <div className="flex flex-wrap gap-3 items-end">
                   <Field label="ยอดนิยม">
                     <Select value={symbol} onValueChange={(v) => { if (v) { setSymbol(v); setCustomSymbol(""); } }}>
-                      <SelectTrigger className="w-36"><SelectValue /></SelectTrigger>
+                      <SelectTrigger className="w-full sm:w-36"><SelectValue /></SelectTrigger>
                       <SelectContent>
                         <SelectGroup><SelectLabel>ยอดนิยม</SelectLabel>
                           {POPULAR_SYMBOLS.map(s => <SelectItem key={s} value={s}>{s}</SelectItem>)}
@@ -1260,7 +1263,7 @@ export default function KlinesPage() {
                     </Select>
                   </Field>
                   <Field label="กำหนดเอง">
-                    <Input placeholder="เช่น PEPEUSDT" value={customSymbol} onChange={e => setCustomSymbol(e.target.value)} className="w-36" />
+                    <Input placeholder="เช่น PEPEUSDT" value={customSymbol} onChange={e => setCustomSymbol(e.target.value)} className="w-full sm:w-36" />
                   </Field>
                   <Badge variant="secondary" className="h-9 px-3 font-mono">{activeSymbol}</Badge>
                 </div>
@@ -1271,7 +1274,7 @@ export default function KlinesPage() {
                 <StepLabel num={2} text="ช่วงเวลา" />
                 <Field label="Interval (ดึง 1 เหรียญ)">
                   <Select value={interval} onValueChange={(v) => { if (v) setInterval(v as Interval); }}>
-                    <SelectTrigger className="w-28"><SelectValue /></SelectTrigger>
+                    <SelectTrigger className="w-full sm:w-28"><SelectValue /></SelectTrigger>
                     <SelectContent>
                       {Object.entries(INTERVAL_GROUPS).map(([g, ints]) => (
                         <SelectGroup key={g}><SelectLabel>{g}</SelectLabel>
@@ -1322,7 +1325,7 @@ export default function KlinesPage() {
             <Separator />
 
             {/* Step 3: จำนวนแท่งเทียน หรือ เริ่มต้น-สิ้นสุด */}
-            <div className="flex flex-wrap gap-10 items-start">
+            <div className="flex flex-wrap items-start gap-4 sm:gap-10 [&>div]:min-w-0 [&>div]:max-w-full">
               <div>
                 <StepLabel num={3} text="จำนวนแท่งเทียน หรือ กำหนดช่วงเวลา เริ่มต้น–สิ้นสุด" />
                 {(() => {
@@ -1343,7 +1346,7 @@ export default function KlinesPage() {
                                 setEndTime("");
                               }}
                             >
-                              <SelectTrigger className="w-28"><SelectValue /></SelectTrigger>
+                              <SelectTrigger className="w-full sm:w-28"><SelectValue /></SelectTrigger>
                               <SelectContent>
                                 {["50", "100", "200", "300", "500", "1000", "1500", "2000", "2500", "3000", "3500", "4000", "4500", "5000"].map(l => <SelectItem key={l} value={l}>{l}</SelectItem>)}
                               </SelectContent>
@@ -1356,7 +1359,7 @@ export default function KlinesPage() {
                             type="datetime-local"
                             value={startTime}
                             onChange={e => { setStartTime(e.target.value); }}
-                            className="w-44"
+                            className="w-full sm:w-44"
                           />
                         </Field>
                         <Field label="สิ้นสุด">
@@ -1364,7 +1367,7 @@ export default function KlinesPage() {
                             type="datetime-local"
                             value={endTime}
                             onChange={e => { setEndTime(e.target.value); }}
-                            className="w-44"
+                            className="w-full sm:w-44"
                           />
                         </Field>
                         {isHistorical && (
@@ -1451,8 +1454,8 @@ export default function KlinesPage() {
         {selectedPairs.length > 0 && (
           <Card size="sm">
             <CardHeader>
-              <div className="flex items-center justify-between gap-2 flex-wrap">
-                <div>
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="min-w-0">
                   <CardTitle>Batch: คู่ที่เลือก ({selectedPairs.length})</CardTitle>
                   <CardDescription>
                     {(() => {
@@ -1462,7 +1465,7 @@ export default function KlinesPage() {
                     })()}
                   </CardDescription>
                 </div>
-                <div className="flex items-center gap-2">
+                <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto">
                   <Button
                     onClick={fetchAllPairs}
                     disabled={batchRunning || selectedPairs.length === 0}
@@ -1550,12 +1553,12 @@ export default function KlinesPage() {
         {loadedCombos.size > 0 && (
           <Card size="sm">
             <CardHeader>
-              <div className="flex items-center justify-between gap-2 flex-wrap">
-                <div>
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="min-w-0">
                   <CardTitle>คู่ที่โหลดแล้ว ({loadedCombos.size})</CardTitle>
                   <CardDescription>คลิกการ์ดเพื่อดูกราฟด้านล่าง · ใช้รัน Backtest ทั้งหมดได้</CardDescription>
                 </div>
-                <div className="flex items-center gap-2">
+                <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto">
                   <Button
                     variant="outline"
                     size="sm"
@@ -1817,8 +1820,8 @@ export default function KlinesPage() {
         {(loadedCombos.size > 0 || csvFiles.length > 0) && (
           <Card size="sm">
             <CardHeader className="border-b">
-              <div className="flex items-center justify-between gap-2 flex-wrap">
-                <div>
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="min-w-0">
                   <CardTitle>
                     ทดสอบกลยุทธ์ย้อนหลัง × ทุกคู่ที่โหลดมา
                   </CardTitle>
@@ -1826,7 +1829,7 @@ export default function KlinesPage() {
                     รัน {STRATEGIES.length} strategies × {loadedCombos.size} combos = {STRATEGIES.length * loadedCombos.size} ผลลัพธ์ — เรียงตามกำไรสูงสุด
                   </CardDescription>
                 </div>
-                <div className="flex items-center gap-2 shrink-0">
+                <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto sm:shrink-0">
                   {multiBtResults && multiBtResults.length > 0 && (
                     <Button
                       onClick={() => setMultiBtCollapsed(v => !v)}
@@ -2209,7 +2212,7 @@ export default function KlinesPage() {
                                         <StatCard label="เทรดที่ดีที่สุด" value={`+${r.bestTradePct.toFixed(2)}%`} color="text-emerald-500" size="sm" />
                                         <StatCard label="เทรดที่แย่ที่สุด" value={`${r.worstTradePct.toFixed(2)}%`} color="text-red-500" size="sm" />
                                       </div>
-                                      <div className="grid grid-cols-3 gap-2">
+                                      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
                                         <StatCard label="แท่งเทียนถือเฉลี่ย" value={`${r.avgBarsHeld.toFixed(1)}`} size="sm" />
                                         <StatCard label="ซื้อแล้วถือ" value={`${r.buyAndHoldPct >= 0 ? "+" : ""}${r.buyAndHoldPct.toFixed(2)}%`} color={pnlColor(r.buyAndHoldPct)} size="sm" />
                                         <StatCard label={diff >= 0 ? "กลยุทธ์ชนะซื้อถือ" : "ซื้อถือชนะกลยุทธ์"} value={`${diff >= 0 ? "+" : ""}${diff.toFixed(2)}%`} color={diff >= 0 ? "text-emerald-500" : "text-red-500"} size="sm" />
@@ -2681,7 +2684,7 @@ export default function KlinesPage() {
 
                     <div className="space-y-1.5 text-[10px]">
                       <p className="font-medium text-foreground/80">Histogram 4 สี:</p>
-                      <div className="grid grid-cols-2 gap-1">
+                      <div className="grid grid-cols-1 gap-1 sm:grid-cols-2">
                         <span className="text-cyan-400">Aqua = เพิ่มขึ้น &amp; เหนือ 0 → แรงซื้อเพิ่มขึ้น (Bullish แรง)</span>
                         <span className="text-blue-500">Blue = ลดลง &amp; เหนือ 0 → แรงซื้ออ่อนตัว (Bullish อ่อน)</span>
                         <span className="text-red-500">Red = ลดลง &amp; ใต้ 0 → แรงขายเพิ่มขึ้น (Bearish แรง)</span>
@@ -2840,7 +2843,7 @@ export default function KlinesPage() {
 
                     <div className="space-y-1.5 text-[10px]">
                       <p className="font-medium text-foreground/80">Histogram 4 สี (Momentum):</p>
-                      <div className="grid grid-cols-2 gap-1">
+                      <div className="grid grid-cols-1 gap-1 sm:grid-cols-2">
                         <span className="text-lime-400">Lime = เพิ่มขึ้น &amp; เหนือ 0 → Momentum ขาขึ้นแรง</span>
                         <span className="text-green-600">Green = ลดลง &amp; เหนือ 0 → Momentum ขาขึ้นอ่อน</span>
                         <span className="text-red-500">Red = ลดลง &amp; ใต้ 0 → Momentum ขาลงแรง</span>
@@ -3407,8 +3410,10 @@ export default function KlinesPage() {
 // ═══════════════════════════════════════════════════════════════
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
+  // จอแคบ: ยืดแบ่งกันในแถว (basis 8rem → ได้ ~2 ช่องต่อแถวบนมือถือ)
+  // sm ขึ้นไป: กลับไปกว้างตามเนื้อหาเหมือนเดิม เพื่อไม่ให้เลย์เอาต์เดสก์ท็อปเปลี่ยน
   return (
-    <div className="space-y-1">
+    <div className="min-w-0 flex-1 basis-32 space-y-1 sm:flex-none sm:basis-auto">
       <label className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">{label}</label>
       {children}
     </div>

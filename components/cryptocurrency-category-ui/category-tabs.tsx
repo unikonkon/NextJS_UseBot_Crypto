@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useState } from "react";
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
@@ -49,9 +49,18 @@ export function CryptoCategoryTabs({ onCoinSelect, activeSymbol }: Props) {
       </CardHeader>
       <CardContent>
         <Tabs value={activeTab} onValueChange={(v) => v && setActiveTab(v)}>
-          <TabsList variant="line" className="flex-wrap h-auto">
+          {/*
+            TabsList มี group-data-horizontal/tabs:h-8 ติดมาจาก variant ซึ่ง specificity
+            สูงกว่า h-auto ธรรมดา (และ tailwind-merge ไม่มองว่าขัดกันเพราะคนละ prefix)
+            พอ wrap หลายแถวจึงล้นทับเนื้อหาข้างล่าง — ต้องใช้ h-auto! บังคับ
+            จอแคบ: เลื่อนแนวนอนแทนการ wrap เพื่อไม่ให้กินพื้นที่ 4 แถว
+          */}
+          <TabsList
+            variant="line"
+            className="h-auto! w-full flex-nowrap justify-start overflow-x-auto sm:flex-wrap [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+          >
             {CRYPTO_CATEGORIES.map((cat) => (
-              <TabsTrigger key={cat.id} value={cat.id} className="text-[11px] gap-1 px-2">
+              <TabsTrigger key={cat.id} value={cat.id} className="shrink-0 flex-none text-[11px] gap-1 px-2 sm:flex-1">
                 <span>{cat.emoji}</span>
                 <span>{cat.name}</span>
                 <Badge variant="secondary" className="ml-1 h-4 px-1 text-[9px] tabular-nums">
