@@ -139,6 +139,217 @@ function Chip({ on, onClick, color, children }: {
   );
 }
 
+// ─── คำอธิบายสิ่งที่วาดบนกราฟ ───────────────────────────────────
+// ทุกข้อความอ้างอิงตรรกะจริงใน lib/indicators.ts ไม่ใช่นิยาม SMC ทั่วไป
+type LegendKey = "struct" | "ob" | "fvg" | "swing";
+type LegendItem = { key: LegendKey; swatch: string; dashed?: boolean; box?: boolean; name: string; desc: string };
+
+const LEGEND: LegendItem[] = [
+  {
+    key: "struct", swatch: "#10b981", dashed: true, name: "CHoCH (Change of Character)",
+    desc: "ราคาทะลุจุดกลับตัวฝั่งตรงข้ามเป็นครั้งแรก = โครงสร้างเปลี่ยนทิศ ถือเป็นสัญญาณกลับตัว จึงมีน้ำหนักมากที่สุด",
+  },
+  {
+    key: "struct", swatch: "#10b981", name: "BOS (Break of Structure)",
+    desc: "ราคาทะลุจุดกลับตัวไปทางเดิม = เทรนด์เดิมไปต่อ อ่อนกว่า CHoCH จึงต้องมีโซนราคาช่วยยืนยัน",
+  },
+  {
+    key: "ob", swatch: "rgba(16,185,129,0.45)", box: true, name: "Order Block (กล่อง)",
+    desc: "แท่งเทียนสีตรงข้ามแท่งสุดท้ายก่อนราคาทะลุโครงสร้าง (มองย้อนไม่เกิน 20 แท่ง) = โซนที่มีคำสั่งค้างอยู่มาก ราคามักย้อนกลับมาทดสอบ",
+  },
+  {
+    key: "fvg", swatch: "rgba(56,189,248,0.45)", box: true, name: "FVG (Fair Value Gap)",
+    desc: "ช่องว่างจากแท่งเทียน 3 แท่งที่ราคาวิ่งเร็วจนไม่มีการซื้อขายคาบเกี่ยว (กรองเฉพาะช่องที่กว้างเกิน 0.1 × ATR) ราคามักย้อนกลับมาเติม",
+  },
+  {
+    key: "swing", swatch: "#94a3b8", name: "Swing points (HH / HL / LH / LL)",
+    desc: "จุดกลับตัวหลัก ใช้บอกทิศเทรนด์ใหญ่ และใช้คำนวณกรอบราคาสำหรับแบ่งโซนพรีเมียม/ส่วนลด",
+  },
+];
+
+/** โซนราคา — เกณฑ์จริงคือ ±25% ของกรอบ ไม่ใช่แค่เหนือ/ใต้กึ่งกลาง */
+const ZONE_NOTE =
+  "โซนราคาวัดจากกรอบ swing สูงสุด–ต่ำสุดล่าสุด: สูงกว่ากึ่งกลาง 25% ขึ้นไป = พรีเมียม (แพง), " +
+  "ต่ำกว่ากึ่งกลาง 25% ลงไป = ส่วนลด (ถูก), ระหว่างนั้น = สมดุล";
+
+/** กติกาส่งสัญญาณจริงของแต่ละ variant */
+const SIGNAL_RULES: Record<string, { buy: string[]; sell: string[]; note?: string }> = {
+  smc: {
+    buy: [
+      "เกิด CHoCH ขาขึ้น → ซื้อทันที (ไม่ดูโซนราคา)",
+      "เกิด BOS ขาขึ้น → ซื้อเฉพาะเมื่อราคาอยู่โซนส่วนลดหรือสมดุล",
+    ],
+    sell: [
+      "เกิด CHoCH ขาลง → ขายทันที (ไม่ดูโซนราคา)",
+      "เกิด BOS ขาลง → ขายเฉพาะเมื่อราคาอยู่โซนพรีเมียมหรือสมดุล",
+    ],
+    note: "ใช้โครงสร้าง “ภายใน” (pivot ยืนยันด้วย 5 แท่ง) ไม่ใช่โครงสร้าง swing ใหญ่ — ส่วน Order Block, FVG และ Swing ที่วาดไว้เป็นบริบทประกอบการตัดสินใจ ไม่ได้เป็นตัวยิงสัญญาณ",
+  },
+  smc_trend_pullback: {
+    buy: [
+      "เกิด CHoCH หรือ BOS ขาขึ้น",
+      "เทรนด์ swing เป็นขาขึ้น",
+      "ราคาอยู่โซนส่วนลดหรือสมดุล",
+      "เพิ่งแตะ Order Block หรือ FVG ขาขึ้นที่ยังไม่ถูกใช้",
+    ],
+    sell: [
+      "ราคาแตะเป้าหมาย TP (ATR × 4)",
+      "ราคาหลุด SL (ATR × 2)",
+      "เกิด CHoCH ขาลง",
+      "เทรนด์ swing พลิกเป็นขาลง",
+      "ราคาเข้าโซนพรีเมียม",
+    ],
+    note: "ต้องครบทุกข้อฝั่งซื้อพร้อมกันจึงเข้า · ฝั่งขายเข้าเงื่อนไขข้อใดข้อหนึ่งก็ปิด · เป็นกลยุทธ์ฝั่งซื้ออย่างเดียว สัญญาณขาย = ปิดไม้ ไม่ใช่เปิด short",
+  },
+  price_action_smc: {
+    buy: [
+      "เกิดโครงสร้างขาขึ้น หรือ sweep ขาขึ้น (ไส้เทียนทะลุจุดกลับตัวลงไปแต่ปิดกลับขึ้นมา)",
+      "ผ่านตัวกรองเทรนด์ swing และโซนราคา (ถ้าเปิดใช้)",
+      "เพิ่งแตะ Order Block หรือ FVG ขาขึ้น (ถ้าเปิดใช้)",
+    ],
+    sell: ["เกิดโครงสร้างขาลง หรือ sweep ขาลง ตามเงื่อนไขกลับด้าน"],
+    note: "จับ sweep เพิ่มจาก SMC ปกติ — คือจังหวะที่ราคาทะลุหลอกแล้วเด้งกลับ ซึ่งมักเป็นจุดที่รายใหญ่เก็บของ",
+  },
+  pasmc_scalper: {
+    buy: [
+      "เกิด CHoCH หรือ sweep ขาขึ้น (ข้าม BOS — เอาเฉพาะจังหวะกลับตัว)",
+      "หรือราคาลงมาแตะ Order Block ขาขึ้นที่ยังไม่ถูกใช้ แล้วปิดเหนือกึ่งกลางกล่อง",
+    ],
+    sell: [
+      "ราคาแตะเป้าหมาย TP (ATR × 3)",
+      "ราคาหลุด SL (ATR × 1.5)",
+      "เกิด CHoCH หรือ sweep ขาลง",
+      "ราคาปิดต่ำกว่าฐานของ Order Block ที่ใช้เข้า",
+    ],
+    note: "โครงสร้างสั้นมาก (ยืนยัน pivot ด้วย 3 แท่ง) สัญญาณจึงถี่และไวกว่าตัวอื่น เหมาะกับ timeframe สั้น",
+  },
+};
+
+/** แผงคำอธิบาย — ยุบไว้เป็นค่าเริ่มต้นเพื่อไม่ให้ดันกราฟตกจอ */
+function ChartLegend({ detail, onClose }: { detail: SmcDetail; onClose: () => void }) {
+  const rules = SIGNAL_RULES[detail.variant] ?? SIGNAL_RULES.smc;
+  const d = detail.drawings;
+  // อธิบายเฉพาะสิ่งที่ variant นี้วาดจริง — โชว์ FVG ทั้งที่ไม่มีข้อมูลจะทำให้สับสน
+  const has: Record<LegendKey, boolean> = {
+    struct: d.structures.length > 0,
+    ob: d.orderBlocks.length > 0,
+    fvg: d.fvgs.length > 0,
+    swing: d.swingPoints.length > 0,
+  };
+  const items = LEGEND.filter((it) => has[it.key]);
+  const hasTpSl = !!d.tp || !!d.sl;
+
+  return (
+    <div className="space-y-3 bg-muted/30 px-3 py-2.5 ring-1 ring-foreground/10">
+      <section>
+        <h4 className="mb-1 text-[10px] font-semibold">กติกาที่ใช้ยิงสัญญาณ</h4>
+        <div className="space-y-1.5">
+          <div>
+            <p className="text-[10px] font-medium text-emerald-500">▲ ซื้อ เมื่อ</p>
+            <ul className="mt-0.5 space-y-0.5">
+              {rules.buy.map((r) => (
+                <li key={r} className="flex gap-1.5 text-[10px] leading-relaxed text-muted-foreground">
+                  <span className="text-emerald-500">·</span>
+                  <span>{r}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+          <div>
+            <p className="text-[10px] font-medium text-red-500">▼ ขาย เมื่อ</p>
+            <ul className="mt-0.5 space-y-0.5">
+              {rules.sell.map((r) => (
+                <li key={r} className="flex gap-1.5 text-[10px] leading-relaxed text-muted-foreground">
+                  <span className="text-red-500">·</span>
+                  <span>{r}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        </div>
+        {rules.note && (
+          <p className="mt-1.5 border-t border-foreground/8 pt-1.5 text-[9px] leading-relaxed text-muted-foreground">
+            {rules.note}
+          </p>
+        )}
+      </section>
+
+      <section>
+        <h4 className="mb-1 text-[10px] font-semibold">สิ่งที่วาดบนกราฟ</h4>
+        <ul className="space-y-1.5">
+          {items.map((it) => (
+            <li key={it.name} className="flex gap-2">
+              <span className="mt-1 shrink-0">
+                {it.box ? (
+                  <span
+                    className="block h-3 w-3.5"
+                    style={{ backgroundColor: it.swatch.replace("0.45", "0.15"), border: `1px solid ${it.swatch}` }}
+                  />
+                ) : (
+                  <span
+                    className="block h-0 w-3.5"
+                    style={{
+                      borderTop: `2px ${it.dashed ? "dashed" : "solid"} ${it.swatch}`,
+                    }}
+                  />
+                )}
+              </span>
+              <span className="min-w-0">
+                <span className="block text-[10px] font-medium">{it.name}</span>
+                <span className="block text-[9px] leading-relaxed text-muted-foreground">{it.desc}</span>
+              </span>
+            </li>
+          ))}
+          {hasTpSl && (
+            <li className="flex gap-2">
+              <span className="mt-1 shrink-0">
+                <span className="block h-0 w-3.5" style={{ borderTop: "2px dashed #10b981" }} />
+                <span className="mt-1 block h-0 w-3.5" style={{ borderTop: "2px dashed #ef4444" }} />
+              </span>
+              <span className="min-w-0">
+                <span className="block text-[10px] font-medium">TP / SL (เส้นประ)</span>
+                <span className="block text-[9px] leading-relaxed text-muted-foreground">
+                  ระดับปิดทำกำไร (เขียว) และตัดขาดทุน (แดง) ที่กลยุทธ์ตั้งไว้ตอนเข้าไม้ คำนวณจาก ATR
+                  ณ แท่งที่เข้า — เส้นจะปรากฏเฉพาะช่วงที่ยังถือโพซิชันอยู่
+                </span>
+              </span>
+            </li>
+          )}
+          <li className="flex gap-2">
+            <span className="mt-0.5 shrink-0 text-[10px] leading-none">
+              <span className="text-emerald-500">▲</span>
+              <span className="text-red-500">▼</span>
+            </span>
+            <span className="min-w-0">
+              <span className="block text-[10px] font-medium">หมุดสัญญาณ</span>
+              <span className="block text-[9px] leading-relaxed text-muted-foreground">
+                จุดที่กติกาด้านบนเข้าเงื่อนไขครบจริง ▲ ใต้แท่ง = ซื้อ, ▼ เหนือแท่ง = ขาย
+              </span>
+            </span>
+          </li>
+        </ul>
+      </section>
+
+      <p className="border-t border-foreground/8 pt-1.5 text-[9px] leading-relaxed text-muted-foreground">
+        {ZONE_NOTE}
+      </p>
+      <p className="text-[9px] leading-relaxed text-amber-600 dark:text-amber-400">
+        ⚠ สีเขียว/แดงบนเส้นและกล่องบอกแค่ทิศของโครงสร้าง ไม่ได้แปลว่าให้ซื้อหรือขายตรงนั้น —
+        ดูที่หมุดสัญญาณเท่านั้น และโครงสร้างต้องรอแท่งถัดไปยืนยันก่อน สัญญาณจึงมาช้ากว่าราคาจริงเสมอ
+      </p>
+
+      {/* ปุ่มปิดซ้ำที่ท้ายแผง — ปุ่มในแถบ chip ต้องเลื่อนไปหา ซึ่งไกลจากตรงนี้มาก */}
+      <button
+        type="button"
+        onClick={onClose}
+        className="h-7 w-full text-[10px] text-muted-foreground ring-1 ring-foreground/12"
+      >
+        ปิดคำอธิบาย
+      </button>
+    </div>
+  );
+}
+
 type Props = {
   detail: SmcDetail;
   /** ฝั่งที่ผู้ใช้กำลังดูอยู่ — ใช้เลื่อนมุมมองไปที่สัญญาณล่าสุดของฝั่งนั้น */
@@ -165,6 +376,7 @@ export function SmcChart({ detail, focusSide = "buy", height = 320 }: Props) {
   const [showSignals, setShowSignals] = useState(true);
   const [showTpSl, setShowTpSl] = useState(false);
   const [activeOnly, setActiveOnly] = useState(true);
+  const [showHelp, setShowHelp] = useState(false);
 
   const hasFvg = detail.drawings.fvgs.length > 0;
   const hasTpSl = !!detail.drawings.tp || !!detail.drawings.sl;
@@ -360,7 +572,12 @@ export function SmcChart({ detail, focusSide = "buy", height = 320 }: Props) {
         <Chip on={activeOnly} onClick={() => setActiveOnly(v => !v)}>
           {activeOnly ? "เฉพาะโซนที่ยังไม่ถูกแตะ" : "โซนทั้งหมด"}
         </Chip>
+        <Chip on={showHelp} onClick={() => setShowHelp(v => !v)}>
+          {showHelp ? "ปิดคำอธิบาย" : "? คำอธิบาย"}
+        </Chip>
       </div>
+
+      {showHelp && <ChartLegend detail={detail} onClose={() => setShowHelp(false)} />}
 
       {/*
         touchAction: "pan-y" สำคัญมากบนมือถือ — lightweight-charts ไม่ตั้ง touch-action
