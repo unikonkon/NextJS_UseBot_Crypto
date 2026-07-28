@@ -5,7 +5,7 @@ import dynamic from "next/dynamic";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { smcVariant, type SmcDetail, type SmcScanRow } from "@/lib/smcScanShared";
+import { changeOf, isLatest, signalOf, smcVariant, type SignalSide, type SmcDetail, type SmcScanRow } from "@/lib/smcScanShared";
 import { cn } from "@/lib/utils";
 import { MiniChart } from "./mini-chart";
 import {
@@ -30,6 +30,8 @@ export type DetailQuery = {
 type Props = {
   row: SmcScanRow | null;
   rank: number | null;
+  /** ฝั่งที่ผู้ใช้กำลังดูในลิสต์ — หน้ารายละเอียดจะเน้นฝั่งนั้น */
+  side: SignalSide;
   query: DetailQuery;
   onClose: () => void;
 };
@@ -52,7 +54,7 @@ function Stat({ label, value, tone }: { label: string; value: string; tone?: str
   );
 }
 
-export function DetailSheet({ row, rank, query, onClose }: Props) {
+export function DetailSheet({ row, rank, side, query, onClose }: Props) {
   // เก็บผลผูกกับ key ของคำขอ แทนการล้าง state ตรง ๆ ตอนเปิด effect
   // (setState ใน effect body ทำให้ render ซ้อน — และผลของเหรียญก่อนหน้าจะค้างให้เห็นแวบหนึ่ง)
   const [fetched, setFetched] = useState<{ key: string; data: SmcDetail | null; err: string | null } | null>(null);
@@ -107,16 +109,21 @@ export function DetailSheet({ row, rank, query, onClose }: Props) {
   const detailErr = fetched && fetched.key === reqKey ? fetched.err : null;
 
   if (!row) return null;
-  const buy = row.buy;
+  const isBuy = side === "buy";
+  const sideLabel = isBuy ? "ซื้อ" : "ขาย";
+  const sig = signalOf(row, side);
+  const opposite = signalOf(row, isBuy ? "sell" : "buy");
+  const chg = changeOf(row, side);
+  const stillLatest = isLatest(row, side);
   const bt = row.backtest;
   const cfg = smcVariant(row.variant);
 
   const levels = [
-    buy?.structureLevel != null
-      ? { price: buy.structureLevel, label: "โครงสร้าง", tone: "neutral" as const }
+    sig?.structureLevel != null
+      ? { price: sig.structureLevel, label: "โครงสร้าง", tone: "neutral" as const }
       : null,
-    buy?.tp != null ? { price: buy.tp, label: "TP", tone: "buy" as const } : null,
-    buy?.sl != null ? { price: buy.sl, label: "SL", tone: "sell" as const } : null,
+    sig?.tp != null ? { price: sig.tp, label: "TP", tone: "buy" as const } : null,
+    sig?.sl != null ? { price: sig.sl, label: "SL", tone: "sell" as const } : null,
   ].filter(Boolean) as { price: number; label: string; tone: "buy" | "sell" | "neutral" }[];
 
   return (
@@ -173,7 +180,7 @@ export function DetailSheet({ row, rank, query, onClose }: Props) {
             </div>
 
             {detail ? (
-              <SmcChart detail={detail} focusIdx={buy?.barIndex ?? null} height={320} />
+              <SmcChart detail={detail} focusSide={side} height={320} />
             ) : (
               <>
                 {/* ระหว่างรอ ใช้กราฟย่อจากผลสแกนไปก่อน เพื่อไม่ให้จอว่าง */}
@@ -203,94 +210,99 @@ export function DetailSheet({ row, rank, query, onClose }: Props) {
             )}
           </section>
 
-          {/* ─── สัญญาณซื้อล่าสุด ─── */}
+          {/* ─── สัญญาณล่าสุดของฝั่งที่เลือก ─── */}
           <section className="mb-4">
-            <h3 className="mb-1.5 text-[11px] font-semibold">สัญญาณซื้อล่าสุด</h3>
-            {buy ? (
-              <div className="bg-emerald-500/8 px-3 py-2 ring-1 ring-emerald-500/25">
+            <h3 className="mb-1.5 text-[11px] font-semibold">สัญญาณ{sideLabel}ล่าสุด</h3>
+            {sig ? (
+              <div className={cn("px-3 py-2 ring-1", isBuy ? "bg-emerald-500/8 ring-emerald-500/25" : "bg-red-500/8 ring-red-500/25")}>
                 <div className="flex items-baseline justify-between">
-                  <span className="text-sm font-bold text-emerald-500">
-                    {buy.barsAgo === 0 ? "แท่งล่าสุด" : `${buy.barsAgo} แท่งที่แล้ว`}
+                  <span className={cn("text-sm font-bold", isBuy ? "text-emerald-500" : "text-red-500")}>
+                    {sig.barsAgo === 0 ? "แท่งล่าสุด" : `${sig.barsAgo} แท่งที่แล้ว`}
                   </span>
-                  {row.changeSinceBuyPct != null && (
-                    <span className={cn("text-sm font-bold tabular-nums", pnlColor(row.changeSinceBuyPct))}>
-                      {fmtPct(row.changeSinceBuyPct)}
+                  {chg != null && (
+                    <span className={cn("text-sm font-bold tabular-nums", pnlColor(isBuy ? chg : -chg))}>
+                      {fmtPct(chg)}
                     </span>
                   )}
                 </div>
                 <div className="mt-0.5 text-[10px] text-muted-foreground">
-                  {fmtBarsAgo(buy.barsAgo, row.interval)} · ปิดแท่งเมื่อ {fmtTime(buy.time, row.interval)}
+                  {fmtBarsAgo(sig.barsAgo, row.interval)} · ปิดแท่งเมื่อ {fmtTime(sig.time, row.interval)}
                 </div>
-                {buy.confluence.length > 0 && (
+                {sig.confluence.length > 0 && (
                   <div className="mt-2 flex flex-wrap gap-1">
-                    {buy.confluence.map((c) => (
+                    {sig.confluence.map((c) => (
                       <Badge key={c} variant="secondary" className="h-5 px-1.5 text-[9px]">{c}</Badge>
                     ))}
                   </div>
                 )}
                 <div className="mt-2 divide-y divide-foreground/8 border-t border-foreground/8">
-                  <Row label="ราคาตอนเกิดสัญญาณ">${fmtPrice(buy.price)}</Row>
+                  <Row label="ราคาตอนเกิดสัญญาณ">${fmtPrice(sig.price)}</Row>
                   <Row label="ราคาปัจจุบัน">${fmtPrice(row.lastPrice)}</Row>
-                  {buy.structureType && (
+                  {sig.structureType && (
                     <Row label="โครงสร้างที่ทะลุ">
-                      {buy.structureType}
-                      {buy.structureLevel != null && (
-                        <span className="ml-1 text-muted-foreground">@ ${fmtPrice(buy.structureLevel)}</span>
+                      {sig.structureType}
+                      {sig.structureLevel != null && (
+                        <span className="ml-1 text-muted-foreground">@ ${fmtPrice(sig.structureLevel)}</span>
                       )}
                     </Row>
                   )}
-                  {buy.zone && <Row label="โซนราคา">{ZONE_LABEL[buy.zone] ?? buy.zone}</Row>}
-                  {buy.internalTrend && (
+                  {sig.zone && <Row label="โซนราคา">{ZONE_LABEL[sig.zone] ?? sig.zone}</Row>}
+                  {sig.internalTrend && (
                     <Row label="เทรนด์ภายใน">
-                      <span className={buy.internalTrend === "bullish" ? "text-emerald-500" : "text-red-500"}>
-                        {TREND_LABEL[buy.internalTrend]}
+                      <span className={sig.internalTrend === "bullish" ? "text-emerald-500" : "text-red-500"}>
+                        {TREND_LABEL[sig.internalTrend]}
                       </span>
                     </Row>
                   )}
-                  {buy.swingTrend && (
+                  {sig.swingTrend && (
                     <Row label="เทรนด์ swing">
-                      <span className={buy.swingTrend === "bullish" ? "text-emerald-500" : "text-red-500"}>
-                        {TREND_LABEL[buy.swingTrend]}
+                      <span className={sig.swingTrend === "bullish" ? "text-emerald-500" : "text-red-500"}>
+                        {TREND_LABEL[sig.swingTrend]}
                       </span>
                     </Row>
                   )}
-                  {buy.orderBlock && (
+                  {sig.orderBlock && (
                     <Row label="Order Block">
-                      ${fmtPrice(buy.orderBlock.low)} – ${fmtPrice(buy.orderBlock.high)}
+                      ${fmtPrice(sig.orderBlock.low)} – ${fmtPrice(sig.orderBlock.high)}
                       <span className="ml-1 text-muted-foreground">
-                        {buy.orderBlock.mitigated ? "(ถูกทดสอบแล้ว)" : "(ยังไม่ถูกแตะ)"}
+                        {sig.orderBlock.mitigated ? "(ถูกทดสอบแล้ว)" : "(ยังไม่ถูกแตะ)"}
                       </span>
                     </Row>
                   )}
-                  {buy.fvg && (
+                  {sig.fvg && (
                     <Row label="Fair Value Gap">
-                      ${fmtPrice(buy.fvg.bottom)} – ${fmtPrice(buy.fvg.top)}
+                      ${fmtPrice(sig.fvg.bottom)} – ${fmtPrice(sig.fvg.top)}
                       <span className="ml-1 text-muted-foreground">
-                        {buy.fvg.filled ? "(เติมแล้ว)" : "(ยังเปิดอยู่)"}
+                        {sig.fvg.filled ? "(เติมแล้ว)" : "(ยังเปิดอยู่)"}
                       </span>
                     </Row>
                   )}
-                  {buy.tp != null && (
-                    <Row label="เป้าหมาย (TP)"><span className="text-emerald-500">${fmtPrice(buy.tp)}</span></Row>
+                  {sig.tp != null && (
+                    <Row label="เป้าหมาย (TP)"><span className="text-emerald-500">${fmtPrice(sig.tp)}</span></Row>
                   )}
-                  {buy.sl != null && (
-                    <Row label="จุดตัดขาดทุน (SL)"><span className="text-red-500">${fmtPrice(buy.sl)}</span></Row>
+                  {sig.sl != null && (
+                    <Row label="จุดตัดขาดทุน (SL)"><span className="text-red-500">${fmtPrice(sig.sl)}</span></Row>
                   )}
                 </div>
               </div>
             ) : (
               <p className="bg-muted/40 px-3 py-3 text-center text-[11px] text-muted-foreground italic">
-                ไม่พบสัญญาณซื้อในช่วงข้อมูลนี้
+                ไม่พบสัญญาณ{sideLabel}ในช่วงข้อมูลนี้
               </p>
             )}
           </section>
 
-          {/* ─── สัญญาณขายที่มาทีหลัง (ถ้ามี) ─── */}
-          {row.state === "SELL_ACTIVE" && row.sell && (
-            <p className="mb-4 bg-red-500/8 px-3 py-2 text-[10px] leading-relaxed text-red-500 ring-1 ring-red-500/20">
-              ไม้นี้ <span className="font-semibold">ปิดไปแล้ว</span> — มีสัญญาณขายตามมาเมื่อ{" "}
-              {row.sell.barsAgo} แท่งที่แล้ว
-              {buy && ` (ถือ ${buy.barsAgo - row.sell.barsAgo} แท่ง)`}
+          {/* ─── สัญญาณฝั่งตรงข้ามที่ตามมาทีหลัง (ถ้ามี) ─── */}
+          {!stillLatest && sig && opposite && (
+            <p
+              className={cn(
+                "mb-4 px-3 py-2 text-[10px] leading-relaxed ring-1",
+                isBuy ? "bg-red-500/8 text-red-500 ring-red-500/20" : "bg-emerald-500/8 text-emerald-500 ring-emerald-500/20",
+              )}
+            >
+              สัญญาณนี้ <span className="font-semibold">ถูกกลบไปแล้ว</span> — มีสัญญาณ
+              {isBuy ? "ขาย" : "ซื้อ"}ตามมาเมื่อ {opposite.barsAgo} แท่งที่แล้ว
+              {` (ห่างกัน ${sig.barsAgo - opposite.barsAgo} แท่ง)`}
               {(cfg.id === "pasmc_scalper" || cfg.id === "smc_trend_pullback") && " ซึ่งเป็นการออกตาม TP/SL ของกลยุทธ์"}
             </p>
           )}

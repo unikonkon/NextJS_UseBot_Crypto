@@ -17,7 +17,7 @@ import {
   type Time,
   type UTCTimestamp,
 } from "lightweight-charts";
-import type { SmcDetail } from "@/lib/smcScanShared";
+import type { SignalSide, SmcDetail } from "@/lib/smcScanShared";
 import { cn } from "@/lib/utils";
 
 // ─── สิ่งที่วาดทับกราฟ (พิกัดเป็น index ของแท่ง + ราคา) ─────────
@@ -141,16 +141,20 @@ function Chip({ on, onClick, color, children }: {
 
 type Props = {
   detail: SmcDetail;
-  /** index ของแท่งที่เกิดสัญญาณซื้อ — ใช้เลื่อนมุมมองไปให้เห็นตอนเปิด */
-  focusIdx?: number | null;
+  /** ฝั่งที่ผู้ใช้กำลังดูอยู่ — ใช้เลื่อนมุมมองไปที่สัญญาณล่าสุดของฝั่งนั้น */
+  focusSide?: SignalSide;
   height?: number;
 };
 
-export function SmcChart({ detail, focusIdx, height = 320 }: Props) {
+export function SmcChart({ detail, focusSide = "buy", height = 320 }: Props) {
   const boxRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const candleRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
   const overlayRef = useRef<SmcOverlay | null>(null);
+  // React รัน cleanup ตามลำดับที่ประกาศ effect — effect สร้างกราฟอยู่ก่อน cleanup ของมัน
+  // (chart.remove()) จึงรันก่อน cleanup ของ effect หมุดสัญญาณ ทำให้ setMarkers() ไปแตะ
+  // series ที่ถูกทำลายแล้วและโยน "Object is disposed" ธงนี้กันเคสนั้น
+  const chartAliveRef = useRef(false);
   const { resolvedTheme } = useTheme();
   const isDark = resolvedTheme !== "light";
 
@@ -255,6 +259,7 @@ export function SmcChart({ detail, focusIdx, height = 320 }: Props) {
       handleScale: { pinch: true, mouseWheel: true, axisPressedMouseMove: true, axisDoubleClickReset: true },
     });
     chartRef.current = chart;
+    chartAliveRef.current = true;
 
     const candles = chart.addSeries(CandlestickSeries, {
       upColor: "#10b981", downColor: "#ef4444",
@@ -283,6 +288,7 @@ export function SmcChart({ detail, focusIdx, height = 320 }: Props) {
 
     return () => {
       ro.disconnect();
+      chartAliveRef.current = false;
       chart.remove();
       chartRef.current = null;
       candleRef.current = null;
@@ -310,13 +316,24 @@ export function SmcChart({ detail, focusIdx, height = 320 }: Props) {
           }))
       : [];
     const handle = createSeriesMarkers(candles, markers);
-    return () => handle.setMarkers([]);
+    return () => { if (chartAliveRef.current) handle.setMarkers([]); };
   }, [detail, showSignals]);
 
   // ── ป้อนสิ่งที่จะวาดให้ primitive (มันจะสั่ง repaint เอง) ──
   useEffect(() => {
     overlayRef.current?.setData(overlay);
   }, [overlay]);
+
+  // หา index จาก detail.signals ของ payload นี้เอง — ห้ามใช้ barIndex จากผลสแกน
+  // เพราะกราฟดึงข้อมูลคนละรอบ ถ้ามีแท่งปิดเพิ่มระหว่างนั้น หน้าต่าง limit แท่งจะเลื่อน
+  // ทำให้ index เดิมชี้ผิดแท่งทั้งชุด
+  const focusIdx = useMemo(() => {
+    const want = focusSide === "buy" ? "BUY" : "SELL";
+    for (let i = detail.signals.length - 1; i >= 0; i--) {
+      if (detail.signals[i].kind === want) return detail.signals[i].idx;
+    }
+    return null;
+  }, [detail.signals, focusSide]);
 
   const fitAll = useCallback(() => chartRef.current?.timeScale().fitContent(), []);
 
@@ -365,7 +382,7 @@ export function SmcChart({ detail, focusIdx, height = 320 }: Props) {
         <div className="flex shrink-0 gap-1">
           {focusIdx != null && (
             <button type="button" onClick={focusSignal} className="h-6 shrink-0 px-2 text-[9px] whitespace-nowrap ring-1 ring-foreground/15">
-              ไปที่สัญญาณ
+              ไปที่สัญญาณ{focusSide === "buy" ? "ซื้อ" : "ขาย"}
             </button>
           )}
           <button type="button" onClick={fitAll} className="h-6 shrink-0 px-2 text-[9px] whitespace-nowrap ring-1 ring-foreground/15">

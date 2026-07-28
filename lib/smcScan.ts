@@ -431,15 +431,18 @@ export function analyzeSmc(
       : null;
 
     const price = closes[idx];
+    // จุดบรรจบ — คิดทั้งสองฝั่ง (เดิมคำนวณเฉพาะฝั่งซื้อ ทำให้สัญญาณขายไม่มีป้ายอะไรเลย)
+    const bullish = bias === "bullish";
     const confluence: string[] = [];
     if (struct) confluence.push(struct.type);
-    if (bias === "bullish") {
-      if (zone === "discount") confluence.push("โซนส่วนลด");
-      else if (zone === "equilibrium") confluence.push("โซนสมดุล");
-      if (swingTrend === "bullish") confluence.push("เทรนด์ swing ขาขึ้น");
-      if (ob && !ob.mitigated && price >= ob.low && price <= ob.high) confluence.push("อยู่ในกล่อง OB");
-      if (fvg && !fvg.filled) confluence.push("มี FVG รองรับ");
+    if (bullish ? zone === "discount" : zone === "premium") {
+      confluence.push(bullish ? "โซนส่วนลด" : "โซนพรีเมียม");
+    } else if (zone === "equilibrium") {
+      confluence.push("โซนสมดุล");
     }
+    if (swingTrend === bias) confluence.push(bullish ? "เทรนด์ swing ขาขึ้น" : "เทรนด์ swing ขาลง");
+    if (ob && !ob.mitigated && price >= ob.low && price <= ob.high) confluence.push("อยู่ในกล่อง OB");
+    if (fvg && !fvg.filled) confluence.push(bullish ? "มี FVG รองรับ" : "มี FVG กดอยู่");
 
     return {
       barIndex: idx,
@@ -498,6 +501,7 @@ export function analyzeSmc(
     buy,
     sell,
     changeSinceBuyPct: buy ? round(((lastPrice - closes[lastBuy]) / closes[lastBuy]) * 100, 2) : null,
+    changeSinceSellPct: sell ? round(((lastPrice - closes[lastSell]) / closes[lastSell]) * 100, 2) : null,
     backtest: opts.withBacktest === false ? null : quickBacktest(klines, r.signal, opts.feesPct ?? 0.1),
     candles,
     buyMarks,

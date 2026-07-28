@@ -11,10 +11,10 @@ import {
   INTERVAL_MS,
   SMC_VARIANTS,
   estimateWeight,
-  rankByFreshBuy,
+  rankBySignal,
   smcVariant,
   type ScanEvent,
-  type ScanFilter,
+  type SignalSide,
   type SmcScanRow,
   type SmcVariantId,
 } from "@/lib/smcScanShared";
@@ -61,8 +61,9 @@ export default function SmcMobileScannerPage() {
   // ── ผลลัพธ์ ──
   const [rows, setRows] = useState<Map<string, SmcScanRow>>(new Map());
   const [errors, setErrors] = useState<{ symbol: string; message: string }[]>([]);
-  const [filter, setFilter] = useState<ScanFilter>("buy_active");
-  const [filterTouched, setFilterTouched] = useState(false);
+  const [side, setSide] = useState<SignalSide>("buy");
+  const [latestOnly, setLatestOnly] = useState(true);
+  const [latestTouched, setLatestTouched] = useState(false);
   const [progress, setProgress] = useState<{ done: number; total: number; symbol: string; usedWeight1m: number; waiting: boolean } | null>(null);
   const [summary, setSummary] = useState<Extract<ScanEvent, { type: "done" }> | null>(null);
   const [scanning, setScanning] = useState(false);
@@ -173,21 +174,38 @@ export default function SmcMobileScannerPage() {
   const stop = useCallback(() => abortRef.current?.abort(), []);
 
   const allRows = useMemo(() => Array.from(rows.values()), [rows]);
-  const { activeOnly, anyBuy } = useMemo(() => ({
-    activeOnly: rankByFreshBuy(allRows, "buy_active"),
-    anyBuy: rankByFreshBuy(allRows, "any_buy"),
+
+  // จัดอันดับทั้งสองฝั่งไว้เลย เพื่อโชว์จำนวนบนปุ่มสลับฝั่งได้ทันที
+  const { latest, all } = useMemo(() => ({
+    latest: { buy: rankBySignal(allRows, "buy", true), sell: rankBySignal(allRows, "sell", true) },
+    all: { buy: rankBySignal(allRows, "buy", false), sell: rankBySignal(allRows, "sell", false) },
   }), [allRows]);
 
-  // กลยุทธ์ที่มี TP/SL (Pullback, Scalper) มักปิดไม้ภายใน 1–3 แท่ง สถานะ "ยังเปิดอยู่"
-  // จึงแทบไม่เกิด — ถ้าผู้ใช้ยังไม่เคยแตะตัวกรองเอง ให้สลับไปโหมด "ทั้งหมด" ให้อัตโนมัติ
-  // แทนที่จะโชว์หน้าว่างเปล่า
-  const autoSwitched = !filterTouched && activeOnly.length === 0 && anyBuy.length > 0;
-  const effFilter: ScanFilter = autoSwitched ? "any_buy" : filter;
-  const ranked = effFilter === "any_buy" ? anyBuy : activeOnly;
-  const noBuyCount = allRows.length - anyBuy.length;
-  const sellSideCount = anyBuy.length - activeOnly.length;
+  // กลยุทธ์ที่มี TP/SL (Pullback, Scalper) จะมีสัญญาณฝั่งตรงข้ามตามมาภายใน 1–3 แท่งเสมอ
+  // ทำให้ "ยังไม่มีฝั่งตรงข้ามตามมา" แทบไม่เกิด — ถ้าผู้ใช้ยังไม่เคยแตะเอง ให้ปลดเงื่อนไข
+  // ให้อัตโนมัติ แทนที่จะโชว์หน้าว่างเปล่า
+  //
+  // คิดแยกรายฝั่ง เพื่อให้ตัวเลขบนปุ่มตรงกับสิ่งที่จะเห็นจริงตอนกดสลับฝั่ง
+  const autoOffFor = useCallback(
+    (s: SignalSide) => !latestTouched && latest[s].length === 0 && all[s].length > 0,
+    [latestTouched, latest, all],
+  );
+  const listFor = useCallback(
+    (s: SignalSide) => ((autoOffFor(s) ? false : latestOnly) ? latest[s] : all[s]),
+    [autoOffFor, latestOnly, latest, all],
+  );
+
+  const autoSwitched = autoOffFor(side);
+  const effLatestOnly = autoSwitched ? false : latestOnly;
+  const ranked = listFor(side);
+  const sideCounts = { buy: listFor("buy").length, sell: listFor("sell").length };
+  const noSignalCount = allRows.length - all[side].length;
+  const supersededCount = all[side].length - latest[side].length;
   const openRow = openSymbol ? rows.get(openSymbol) ?? null : null;
-  const openRank = openRow ? ranked.findIndex((r) => r.symbol === openRow.symbol) + 1 : null;
+  // findIndex คืน -1 เมื่อเหรียญที่เปิดอยู่ไม่อยู่ในลิสต์ฝั่งปัจจุบัน (เช่นสลับฝั่งขณะเปิด sheet)
+  // ถ้าไม่เช็คจะโชว์เป็น "#0"
+  const openIdx = openRow ? ranked.findIndex((r) => r.symbol === openRow.symbol) : -1;
+  const openRank = openIdx >= 0 ? openIdx + 1 : null;
 
   const pct = progress && progress.total > 0 ? (progress.done / progress.total) * 100 : 0;
   const weightPct = progress ? (progress.usedWeight1m / BINANCE_WEIGHT_LIMIT_1M) * 100 : 0;
@@ -200,7 +218,7 @@ export default function SmcMobileScannerPage() {
           <div className="min-w-0 flex-1">
             <h1 className="truncate text-sm font-bold">SMC Scanner</h1>
             <p className="truncate text-[10px] text-muted-foreground">
-              หาเหรียญที่มีสัญญาณซื้อสดใหม่ที่สุด
+              หาเหรียญที่มีสัญญาณ{side === "buy" ? "ซื้อ" : "ขาย"}สดใหม่ที่สุด
             </p>
           </div>
           <Link href="/klines" className="text-[10px] text-muted-foreground underline decoration-dotted">
@@ -440,42 +458,64 @@ export default function SmcMobileScannerPage() {
           <div className="space-y-2">
             <div className="flex items-center justify-between gap-2">
               <h2 className="text-[11px] font-semibold tracking-wide text-muted-foreground uppercase">
-                อันดับสัญญาณซื้อสดใหม่ที่สุด
+                อันดับสัญญาณ{side === "buy" ? "ซื้อ" : "ขาย"}สดใหม่ที่สุด
               </h2>
               <Badge variant="secondary" className="h-5 px-1.5 text-[10px] tabular-nums">
                 {ranked.length}
               </Badge>
             </div>
 
+            {/* ฝั่งสัญญาณ — ทั้งสองฝั่งเรียงจากที่เพิ่งเกิดล่าสุดขึ้นก่อนเหมือนกัน */}
             <div className="grid grid-cols-2 gap-0 ring-1 ring-foreground/15">
               {([
-                ["buy_active", `ไม้ยังเปิดอยู่ (${activeOnly.length})`],
-                ["any_buy", `ทั้งหมด (${anyBuy.length})`],
-              ] as [ScanFilter, string][]).map(([f, label]) => (
+                ["buy", "สัญญาณซื้อ", sideCounts.buy] as const,
+                ["sell", "สัญญาณขาย", sideCounts.sell] as const,
+              ]).map(([s, label, n]) => (
                 <button
-                  key={f}
+                  key={s}
                   type="button"
-                  onClick={() => { setFilter(f); setFilterTouched(true); }}
+                  onClick={() => setSide(s)}
                   className={cn(
-                    "h-8 text-[11px] font-medium tabular-nums transition-colors",
-                    effFilter === f ? "bg-foreground text-background" : "bg-background text-muted-foreground",
+                    "h-9 text-[11px] font-medium tabular-nums transition-colors",
+                    side === s
+                      ? s === "buy" ? "bg-emerald-500 text-white" : "bg-red-500 text-white"
+                      : "bg-background text-muted-foreground",
                   )}
                 >
-                  {label}
+                  {label} ({n})
                 </button>
               ))}
             </div>
 
+            <button
+              type="button"
+              onClick={() => { setLatestOnly(v => !v); setLatestTouched(true); }}
+              className={cn(
+                "flex h-7 w-full items-center justify-center gap-1.5 text-[10px] ring-1 transition-colors",
+                effLatestOnly ? "bg-foreground/10 text-foreground ring-foreground/25" : "text-muted-foreground ring-foreground/12",
+              )}
+            >
+              <span
+                className={cn(
+                  "flex h-3.5 w-3.5 items-center justify-center text-[9px] leading-none ring-1",
+                  effLatestOnly ? "bg-primary text-primary-foreground ring-primary" : "ring-foreground/30",
+                )}
+              >
+                {effLatestOnly ? "✓" : ""}
+              </span>
+              เฉพาะที่ยังไม่มีสัญญาณฝั่งตรงข้ามตามมา
+            </button>
+
             {autoSwitched && (
               <p className="bg-muted/40 px-2 py-1.5 text-[10px] leading-relaxed text-muted-foreground">
-                {cfg.shortName} มี TP/SL ในตัว ไม้จึงมักปิดภายในไม่กี่แท่ง — ไม่มีเหรียญไหน “ไม้ยังเปิดอยู่”
-                จึงแสดงสัญญาณซื้อล่าสุดทั้งหมดแทน
+                {cfg.shortName} มี TP/SL ในตัว สัญญาณฝั่งตรงข้ามจึงตามมาภายในไม่กี่แท่ง — ไม่มีเหรียญไหนผ่านเงื่อนไขนั้น
+                จึงแสดงสัญญาณ{side === "buy" ? "ซื้อ" : "ขาย"}ล่าสุดทั้งหมดแทน
               </p>
             )}
 
             {ranked.length === 0 ? (
               <p className="bg-muted/40 px-3 py-6 text-center text-[11px] text-muted-foreground italic">
-                {scanning ? "กำลังสแกน…" : "ยังไม่พบเหรียญที่ตรงเงื่อนไข"}
+                {scanning ? "กำลังสแกน…" : `ยังไม่พบเหรียญที่มีสัญญาณ${side === "buy" ? "ซื้อ" : "ขาย"}ตรงเงื่อนไข`}
               </p>
             ) : (
               <div className="space-y-1.5">
@@ -483,6 +523,7 @@ export default function SmcMobileScannerPage() {
                   <ResultCard
                     key={row.symbol}
                     row={row}
+                    side={side}
                     rank={i + 1}
                     onOpen={() => setOpenSymbol(row.symbol)}
                   />
@@ -492,8 +533,8 @@ export default function SmcMobileScannerPage() {
 
             <p className="text-[10px] leading-relaxed text-muted-foreground">
               สแกนแล้ว {allRows.length} เหรียญ
-              {effFilter === "buy_active" && sellSideCount > 0 && ` · ปิดไม้ไปแล้ว ${sellSideCount}`}
-              {noBuyCount > 0 && ` · ไม่พบสัญญาณซื้อ ${noBuyCount}`}
+              {effLatestOnly && supersededCount > 0 && ` · มีฝั่งตรงข้ามตามมาแล้ว ${supersededCount}`}
+              {noSignalCount > 0 && ` · ไม่พบสัญญาณ${side === "buy" ? "ซื้อ" : "ขาย"} ${noSignalCount}`}
               {errors.length > 0 && ` · ดึงไม่สำเร็จ ${errors.length}`}
               {summary && ` · ใช้เวลา ${(summary.elapsedMs / 1000).toFixed(1)} วิ (${summary.calls} calls)`}
             </p>
@@ -528,7 +569,7 @@ export default function SmcMobileScannerPage() {
             <p className="mt-2 text-xs font-medium">เลือกหมวดหรือเหรียญ แล้วกดสแกน</p>
             <p className="mt-1 text-[10px] leading-relaxed text-muted-foreground">
               ระบบจะดึงข้อมูลจาก Binance ตามโควตา rate limit
-              แล้วรัน {cfg.shortName} ให้ทันที จากนั้นเรียงลำดับเหรียญที่มีสัญญาณซื้อสดใหม่ที่สุด
+              แล้วรัน {cfg.shortName} ให้ทันที จากนั้นเรียงลำดับเหรียญที่มีสัญญาณซื้อ/ขายสดใหม่ที่สุด
             </p>
           </div>
         )}
@@ -559,6 +600,7 @@ export default function SmcMobileScannerPage() {
       <DetailSheet
         row={openRow}
         rank={openRank}
+        side={side}
         query={{
           interval,
           limit: numLimit,

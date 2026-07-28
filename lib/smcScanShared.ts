@@ -247,8 +247,9 @@ export interface SmcScanRow {
   state: "BUY_ACTIVE" | "SELL_ACTIVE" | "NONE";
   buy: SmcSignalDetail | null;
   sell: SmcSignalDetail | null;
-  /** % ที่ราคาวิ่งไปแล้วนับจากราคาตอนเกิดสัญญาณซื้อ */
+  /** % ที่ราคาวิ่งไปแล้วนับจากราคาตอนเกิดสัญญาณ (แยกตามฝั่ง) */
   changeSinceBuyPct: number | null;
+  changeSinceSellPct: number | null;
   backtest: QuickBacktest | null;
   candles: CandleWindow | null;
   /** index (เทียบ klines เต็ม) ของทุกสัญญาณในหน้าต่างกราฟ */
@@ -258,21 +259,41 @@ export interface SmcScanRow {
 }
 
 // ═══ Ranking ═════════════════════════════════════════════════════
-export type ScanFilter = "buy_active" | "any_buy";
+export type SignalSide = "buy" | "sell";
+
+/** สัญญาณของฝั่งที่เลือก (null = เหรียญนี้ไม่เคยมีสัญญาณฝั่งนั้นในช่วงข้อมูล) */
+export function signalOf(row: SmcScanRow, side: SignalSide): SmcSignalDetail | null {
+  return side === "buy" ? row.buy : row.sell;
+}
+
+/** % ที่ราคาวิ่งไปนับจากสัญญาณฝั่งที่เลือก */
+export function changeOf(row: SmcScanRow, side: SignalSide): number | null {
+  return side === "buy" ? row.changeSinceBuyPct : row.changeSinceSellPct;
+}
+
+/** สัญญาณฝั่งนี้ยังเป็นสัญญาณล่าสุดอยู่ไหม (ยังไม่มีฝั่งตรงข้ามตามมา) */
+export function isLatest(row: SmcScanRow, side: SignalSide): boolean {
+  return row.state === (side === "buy" ? "BUY_ACTIVE" : "SELL_ACTIVE");
+}
 
 /**
- * เรียงอันดับตาม "สัญญาณซื้อสดใหม่ที่สุด" — barsAgo น้อยสุดมาก่อน
+ * เรียงอันดับ "สัญญาณสดใหม่ที่สุด" ของฝั่งที่เลือก — barsAgo น้อยสุดมาก่อน
  * เสมอกันตัดสินด้วยจำนวนจุดบรรจบ (confluence) แล้วตามด้วยเวลาจริง
  */
-export function rankByFreshBuy(rows: SmcScanRow[], filter: ScanFilter = "buy_active"): SmcScanRow[] {
+export function rankBySignal(
+  rows: SmcScanRow[],
+  side: SignalSide,
+  latestOnly = false,
+): SmcScanRow[] {
   return rows
-    .filter((r) => r.buy !== null && (filter === "any_buy" || r.state === "BUY_ACTIVE"))
+    .filter((r) => signalOf(r, side) !== null && (!latestOnly || isLatest(r, side)))
     .sort((a, b) => {
-      const d = (a.buy as SmcSignalDetail).barsAgo - (b.buy as SmcSignalDetail).barsAgo;
-      if (d !== 0) return d;
-      const c = (b.buy as SmcSignalDetail).confluence.length - (a.buy as SmcSignalDetail).confluence.length;
+      const A = signalOf(a, side) as SmcSignalDetail;
+      const B = signalOf(b, side) as SmcSignalDetail;
+      if (A.barsAgo !== B.barsAgo) return A.barsAgo - B.barsAgo;
+      const c = B.confluence.length - A.confluence.length;
       if (c !== 0) return c;
-      return (b.buy as SmcSignalDetail).time - (a.buy as SmcSignalDetail).time;
+      return B.time - A.time;
     });
 }
 
