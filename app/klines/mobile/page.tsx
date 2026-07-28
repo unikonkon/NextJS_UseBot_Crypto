@@ -556,7 +556,18 @@ export default function SmcMobileScannerPage() {
         )}
       </div>
 
-      <DetailSheet row={openRow} rank={openRank} onClose={() => setOpenSymbol(null)} />
+      <DetailSheet
+        row={openRow}
+        rank={openRank}
+        query={{
+          interval,
+          limit: numLimit,
+          startTime: plan.startTime,
+          endTime: plan.endTime,
+          variant,
+        }}
+        onClose={() => setOpenSymbol(null)}
+      />
     </div>
   );
 }

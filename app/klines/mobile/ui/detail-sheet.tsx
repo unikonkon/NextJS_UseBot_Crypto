@@ -1,18 +1,36 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
+import dynamic from "next/dynamic";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { smcVariant, type SmcScanRow } from "@/lib/smcScanShared";
+import { Skeleton } from "@/components/ui/skeleton";
+import { smcVariant, type SmcDetail, type SmcScanRow } from "@/lib/smcScanShared";
 import { cn } from "@/lib/utils";
 import { MiniChart } from "./mini-chart";
 import {
   baseAsset, fmtBarsAgo, fmtPct, fmtPrice, fmtTime, pnlColor, TREND_LABEL, ZONE_LABEL,
 } from "./format";
 
+// lightweight-charts ~45KB — โหลดตอนเปิด sheet เท่านั้น ไม่ให้ถ่วงหน้าลิสต์
+const SmcChart = dynamic(() => import("./smc-chart").then(m => m.SmcChart), {
+  ssr: false,
+  loading: () => <Skeleton className="h-[320px] w-full" />,
+});
+
+/** พารามิเตอร์ที่ใช้ตอนสแกน — ต้องส่งซ้ำเพื่อให้กราฟรายละเอียดได้ข้อมูลชุดเดียวกัน */
+export type DetailQuery = {
+  interval: string;
+  limit: number;
+  startTime?: number;
+  endTime?: number;
+  variant: string;
+};
+
 type Props = {
   row: SmcScanRow | null;
   rank: number | null;
+  query: DetailQuery;
   onClose: () => void;
 };
 
@@ -34,7 +52,11 @@ function Stat({ label, value, tone }: { label: string; value: string; tone?: str
   );
 }
 
-export function DetailSheet({ row, rank, onClose }: Props) {
+export function DetailSheet({ row, rank, query, onClose }: Props) {
+  // เก็บผลผูกกับ key ของคำขอ แทนการล้าง state ตรง ๆ ตอนเปิด effect
+  // (setState ใน effect body ทำให้ render ซ้อน — และผลของเหรียญก่อนหน้าจะค้างให้เห็นแวบหนึ่ง)
+  const [fetched, setFetched] = useState<{ key: string; data: SmcDetail | null; err: string | null } | null>(null);
+
   // ล็อกการเลื่อนพื้นหลังขณะเปิด sheet
   useEffect(() => {
     if (!row) return;
@@ -47,6 +69,42 @@ export function DetailSheet({ row, rank, onClose }: Props) {
       window.removeEventListener("keydown", onKey);
     };
   }, [row, onClose]);
+
+  // โหลดแท่งเทียนครบชุด + เส้นที่ indicator ตี (payload หนักเกินกว่าจะส่งมากับลิสต์)
+  const symbol = row?.symbol;
+  const reqKey = symbol
+    ? [symbol, query.interval, query.limit, query.variant, query.startTime ?? "", query.endTime ?? ""].join("|")
+    : null;
+
+  useEffect(() => {
+    if (!symbol || !reqKey) return;
+    const ctrl = new AbortController();
+    const p = new URLSearchParams({
+      symbol,
+      interval: query.interval,
+      limit: String(query.limit),
+      variant: query.variant,
+    });
+    if (query.startTime) p.set("startTime", String(query.startTime));
+    if (query.endTime) p.set("endTime", String(query.endTime));
+
+    fetch(`/api/smc-scan/detail?${p}`, { signal: ctrl.signal })
+      .then(async (res) => {
+        if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `HTTP ${res.status}`);
+        return res.json() as Promise<SmcDetail>;
+      })
+      .then((data) => setFetched({ key: reqKey, data, err: null }))
+      .catch((e) => {
+        if (ctrl.signal.aborted) return;
+        setFetched({ key: reqKey, data: null, err: e instanceof Error ? e.message : String(e) });
+      });
+
+    return () => ctrl.abort();
+  }, [symbol, reqKey, query.interval, query.limit, query.variant, query.startTime, query.endTime]);
+
+  // ใช้ผลเฉพาะเมื่อตรงกับคำขอปัจจุบัน — กันข้อมูลของเหรียญก่อนหน้าโผล่
+  const detail = fetched && fetched.key === reqKey ? fetched.data : null;
+  const detailErr = fetched && fetched.key === reqKey ? fetched.err : null;
 
   if (!row) return null;
   const buy = row.buy;
@@ -103,29 +161,47 @@ export function DetailSheet({ row, rank, onClose }: Props) {
             </p>
           )}
 
-          {/* ─── กราฟย่อ ─── */}
-          {row.candles && (
-            <section className="mb-4">
-              <div className="mb-1 flex items-baseline justify-between">
-                <h3 className="text-[11px] font-semibold">กราฟ {row.candles.c.length} แท่งล่าสุด</h3>
-                <span className="text-[10px] text-muted-foreground">
-                  ▲ ซื้อ · ▼ ขาย
-                </span>
-              </div>
-              <MiniChart
-                candles={row.candles}
-                buyMarks={row.buyMarks}
-                sellMarks={row.sellMarks}
-                levels={levels}
-                height={160}
-                className="ring-1 ring-foreground/10"
-              />
+          {/* ─── กราฟ ─── */}
+          <section className="mb-4">
+            <div className="mb-1 flex items-baseline justify-between gap-2">
+              <h3 className="text-[11px] font-semibold">
+                กราฟ {detail ? `${detail.bars.toLocaleString()} แท่ง (ทั้งหมด)` : `${row.bars.toLocaleString()} แท่ง`}
+              </h3>
+              {!detail && !detailErr && (
+                <span className="text-[10px] text-muted-foreground animate-pulse">กำลังโหลดกราฟเต็ม…</span>
+              )}
+            </div>
+
+            {detail ? (
+              <SmcChart detail={detail} focusIdx={buy?.barIndex ?? null} height={320} />
+            ) : (
+              <>
+                {/* ระหว่างรอ ใช้กราฟย่อจากผลสแกนไปก่อน เพื่อไม่ให้จอว่าง */}
+                {row.candles && (
+                  <MiniChart
+                    candles={row.candles}
+                    buyMarks={row.buyMarks}
+                    sellMarks={row.sellMarks}
+                    levels={levels}
+                    height={160}
+                    className="opacity-60 ring-1 ring-foreground/10"
+                  />
+                )}
+                {detailErr && (
+                  <p className="mt-1 bg-destructive/10 px-2 py-1.5 text-[10px] text-destructive">
+                    โหลดกราฟเต็มไม่สำเร็จ: {detailErr} — แสดงกราฟย่อจากผลสแกนแทน
+                  </p>
+                )}
+              </>
+            )}
+
+            {row.candles && !detail && (
               <div className="mt-1 flex justify-between text-[9px] text-muted-foreground tabular-nums">
                 <span>{fmtTime(row.candles.t[0], row.interval)}</span>
                 <span>{fmtTime(row.candles.t[row.candles.t.length - 1], row.interval)}</span>
               </div>
-            </section>
-          )}
+            )}
+          </section>
 
           {/* ─── สัญญาณซื้อล่าสุด ─── */}
           <section className="mb-4">

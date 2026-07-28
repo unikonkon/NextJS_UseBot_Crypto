@@ -26,6 +26,12 @@ import {
   type SmcScanRow,
   type SmcSignalDetail,
   type SmcVariantId,
+  type SmcDetail,
+  type SmcStructureLine,
+  type SmcSwingLabel,
+  type SmcSignalMark,
+  type SmcLevelRun,
+  type SmcZone,
 } from "@/lib/smcScanShared";
 
 export * from "@/lib/smcScanShared";
@@ -184,9 +190,11 @@ interface NormalizedSmc {
   internalTrend: (SMCBias | null)[];
   swingTrend: (SMCBias | null)[] | null;
   zone: ("premium" | "discount" | "equilibrium" | null)[] | null;
-  structures: { index: number; type: string; bias: SMCBias; level: number }[];
-  orderBlocks: { startIndex: number; high: number; low: number; bias: SMCBias; mitigated: boolean }[];
-  fvgs: { index: number; top: number; bottom: number; bias: SMCBias; filled: boolean }[] | null;
+  /** pivotIndex ใช้เป็นจุดเริ่มของเส้นโครงสร้างที่ลากมาถึงแท่งที่ทะลุ */
+  structures: { index: number; pivotIndex: number; type: string; bias: SMCBias; level: number }[];
+  orderBlocks: { startIndex: number; high: number; low: number; bias: SMCBias; mitigated: boolean; mitigatedIndex: number | null }[];
+  fvgs: { index: number; top: number; bottom: number; bias: SMCBias; filled: boolean; filledIndex: number | null }[] | null;
+  swingPoints: { index: number; price: number; type: string }[];
   tp: (number | null)[] | null;
   sl: (number | null)[] | null;
 }
@@ -213,11 +221,13 @@ function runVariant(
         internalTrend: r.trend,
         swingTrend: r.swingTrend,
         zone: r.premiumDiscount,
-        structures: r.structures.map((s) => ({ index: s.index, type: s.type, bias: s.bias, level: s.level })),
+        structures: r.structures.map((s) => ({ index: s.index, pivotIndex: s.pivotIndex, type: s.type, bias: s.bias, level: s.level })),
         orderBlocks: r.orderBlocks.map((b) => ({
-          startIndex: b.startIndex, high: b.high, low: b.low, bias: b.bias, mitigated: b.mitigated,
+          startIndex: b.startIndex, high: b.high, low: b.low, bias: b.bias,
+          mitigated: b.mitigated, mitigatedIndex: b.mitigatedIndex,
         })),
         fvgs: null,
+        swingPoints: r.swingPoints.map((sp) => ({ index: sp.index, price: sp.price, type: sp.type })),
         tp: null,
         sl: null,
       };
@@ -237,11 +247,13 @@ function runVariant(
         internalTrend: r.trend,
         swingTrend: null,
         zone: null,
-        structures: r.structures.map((s) => ({ index: s.index, type: s.type, bias: s.bias, level: s.level })),
+        structures: r.structures.map((s) => ({ index: s.index, pivotIndex: s.pivotIndex, type: s.type, bias: s.bias, level: s.level })),
         orderBlocks: r.orderBlocks.map((b) => ({
-          startIndex: b.startIndex, high: b.high, low: b.low, bias: b.bias, mitigated: b.mitigated,
+          startIndex: b.startIndex, high: b.high, low: b.low, bias: b.bias,
+          mitigated: b.mitigated, mitigatedIndex: b.mitigatedIndex,
         })),
         fvgs: null,
+        swingPoints: r.swingPoints.map((sp) => ({ index: sp.index, price: sp.price, type: sp.type })),
         tp: r.tp,
         sl: r.sl,
       };
@@ -261,13 +273,16 @@ function runVariant(
         internalTrend: r.internalTrend,
         swingTrend: r.swingTrend,
         zone: r.premiumDiscount,
-        structures: r.internalStructures.map((s) => ({ index: s.index, type: s.type, bias: s.bias, level: s.level })),
+        structures: r.internalStructures.map((s) => ({ index: s.index, pivotIndex: s.pivotIndex, type: s.type, bias: s.bias, level: s.level })),
         orderBlocks: [...r.internalOrderBlocks, ...r.swingOrderBlocks].map((b) => ({
-          startIndex: b.startIndex, high: b.high, low: b.low, bias: b.bias, mitigated: b.mitigated,
+          startIndex: b.startIndex, high: b.high, low: b.low, bias: b.bias,
+          mitigated: b.mitigated, mitigatedIndex: b.mitigatedIndex,
         })),
         fvgs: r.fairValueGaps.map((f) => ({
-          index: f.index, top: f.top, bottom: f.bottom, bias: f.bias, filled: f.filled,
+          index: f.index, top: f.top, bottom: f.bottom, bias: f.bias,
+          filled: f.filled, filledIndex: f.filledIndex,
         })),
+        swingPoints: r.swingPoints.map((sp) => ({ index: sp.index, price: sp.price, type: sp.type })),
         tp: r.tp,
         sl: r.sl,
       };
@@ -280,13 +295,16 @@ function runVariant(
         internalTrend: r.internalTrend,
         swingTrend: r.swingTrend,
         zone: r.premiumDiscount,
-        structures: r.internalStructures.map((s) => ({ index: s.index, type: s.type, bias: s.bias, level: s.level })),
+        structures: r.internalStructures.map((s) => ({ index: s.index, pivotIndex: s.pivotIndex, type: s.type, bias: s.bias, level: s.level })),
         orderBlocks: [...r.internalOrderBlocks, ...r.swingOrderBlocks].map((b) => ({
-          startIndex: b.startIndex, high: b.high, low: b.low, bias: b.bias, mitigated: b.mitigated,
+          startIndex: b.startIndex, high: b.high, low: b.low, bias: b.bias,
+          mitigated: b.mitigated, mitigatedIndex: b.mitigatedIndex,
         })),
         fvgs: r.fairValueGaps.map((f) => ({
-          index: f.index, top: f.top, bottom: f.bottom, bias: f.bias, filled: f.filled,
+          index: f.index, top: f.top, bottom: f.bottom, bias: f.bias,
+          filled: f.filled, filledIndex: f.filledIndex,
         })),
+        swingPoints: r.swingPoints.map((sp) => ({ index: sp.index, price: sp.price, type: sp.type })),
         tp: null,
         sl: null,
       };
@@ -487,5 +505,108 @@ export function analyzeSmc(
     warning: len < cfg.minBars
       ? `มีแค่ ${len} แท่ง — ${cfg.shortName} ต้องการอย่างน้อย ~${cfg.minBars} แท่งจึงจะเชื่อถือได้`
       : undefined,
+  };
+}
+
+/** ยุบ array ที่ค่าคงที่เป็นช่วง ๆ ให้เหลือเฉพาะช่วงที่มีค่า */
+function runLength(arr: (number | null)[] | null): SmcLevelRun[] | null {
+  if (!arr) return null;
+  const out: SmcLevelRun[] = [];
+  let cur: SmcLevelRun | null = null;
+  for (let i = 0; i < arr.length; i++) {
+    const v = arr[i];
+    if (v == null) { cur = null; continue; }
+    const rounded = px(v);
+    if (cur && cur.value === rounded && cur.toIdx === i - 1) cur.toIdx = i;
+    else { cur = { fromIdx: i, toIdx: i, value: rounded }; out.push(cur); }
+  }
+  return out;
+}
+
+// ═══ Detail: กราฟเต็ม + เส้นที่ indicator ตี ═════════════════════
+/**
+ * เตรียมข้อมูลสำหรับหน้ารายละเอียด — แท่งเทียนครบทุกแท่ง พร้อมเส้น/กล่อง
+ * ที่ SMC ตีไว้ (โครงสร้าง CHoCH/BOS, Order Block, FVG, swing points)
+ *
+ * แยกจาก analyzeSmc() เพราะ payload หนักเกินกว่าจะส่งมากับลิสต์ทุกเหรียญ
+ * — โหลดเฉพาะตอนผู้ใช้แตะดูรายละเอียด
+ */
+export function analyzeSmcDetail(
+  symbol: string,
+  interval: Interval,
+  klines: KlineData[],
+  variantId: SmcVariantId,
+  params?: Record<string, number>,
+): SmcDetail {
+  const cfg = smcVariant(variantId);
+  const r = runVariant(klines, variantId, { ...cfg.params, ...(params ?? {}) });
+  const len = klines.length;
+  const last = len - 1;
+
+  const structures: SmcStructureLine[] = r.structures
+    .filter((s) => s.index >= 0 && s.index < len && s.pivotIndex >= 0 && s.pivotIndex < len && s.pivotIndex !== s.index)
+    .map((s) => ({
+      fromIdx: s.pivotIndex,
+      toIdx: s.index,
+      level: px(s.level),
+      type: s.type,
+      bias: s.bias,
+    }));
+
+  const orderBlocks: SmcZone[] = r.orderBlocks
+    .filter((b) => b.startIndex >= 0 && b.startIndex < len)
+    .map((b) => ({
+      fromIdx: b.startIndex,
+      // ยังไม่ถูกลบล้าง → ลากยาวถึงแท่งล่าสุด (โซนยัง active)
+      toIdx: b.mitigated && b.mitigatedIndex != null ? Math.min(b.mitigatedIndex, last) : last,
+      top: px(b.high),
+      bottom: px(b.low),
+      bias: b.bias,
+      closed: b.mitigated,
+    }));
+
+  const fvgs: SmcZone[] = (r.fvgs ?? [])
+    .filter((f) => f.index >= 0 && f.index < len)
+    .map((f) => ({
+      fromIdx: f.index,
+      toIdx: f.filled && f.filledIndex != null ? Math.min(f.filledIndex, last) : last,
+      top: px(f.top),
+      bottom: px(f.bottom),
+      bias: f.bias,
+      closed: f.filled,
+    }));
+
+  const swingPoints: SmcSwingLabel[] = r.swingPoints
+    .filter((sp) => sp.index >= 0 && sp.index < len)
+    .map((sp) => ({ idx: sp.index, price: px(sp.price), type: sp.type }));
+
+  const signals: SmcSignalMark[] = [];
+  for (let i = 0; i < len; i++) {
+    const s = r.signal[i];
+    if (s === "BUY" || s === "SELL") signals.push({ idx: i, kind: s });
+  }
+
+  return {
+    symbol,
+    interval,
+    variant: variantId,
+    bars: len,
+    candles: {
+      offset: 0,
+      t: klines.map((k) => k.openTime),
+      o: klines.map((k) => px(+k.open)),
+      h: klines.map((k) => px(+k.high)),
+      l: klines.map((k) => px(+k.low)),
+      c: klines.map((k) => px(+k.close)),
+    },
+    drawings: {
+      structures,
+      orderBlocks,
+      fvgs,
+      swingPoints,
+      tp: runLength(r.tp),
+      sl: runLength(r.sl),
+    },
+    signals,
   };
 }

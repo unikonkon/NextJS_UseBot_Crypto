@@ -170,6 +170,72 @@ export interface CandleWindow {
   c: number[];
 }
 
+// ═══ Detail payload (กราฟเต็ม + เส้นที่ indicator ตี) ═══════════
+// โหลดตอนผู้ใช้แตะดูรายละเอียดเท่านั้น เพื่อไม่ให้ payload ของลิสต์บวม
+
+/** เส้นโครงสร้าง CHoCH/BOS — ลากแนวนอนจากแท่ง pivot ถึงแท่งที่ทะลุ */
+export interface SmcStructureLine {
+  fromIdx: number;
+  toIdx: number;
+  level: number;
+  type: string;
+  bias: SMCBias;
+}
+
+/** กล่อง Order Block / Fair Value Gap — ลากจากแท่งที่เกิดไปจนจบ (หรือจนถูกลบล้าง) */
+export interface SmcZone {
+  fromIdx: number;
+  toIdx: number;
+  top: number;
+  bottom: number;
+  bias: SMCBias;
+  /** OB = mitigated, FVG = filled */
+  closed: boolean;
+}
+
+/** ช่วงที่ระดับราคาหนึ่งมีผลต่อเนื่อง */
+export interface SmcLevelRun {
+  fromIdx: number;
+  toIdx: number;
+  value: number;
+}
+
+export interface SmcSwingLabel {
+  idx: number;
+  price: number;
+  type: string;
+}
+
+export interface SmcDrawings {
+  structures: SmcStructureLine[];
+  orderBlocks: SmcZone[];
+  fvgs: SmcZone[];
+  swingPoints: SmcSwingLabel[];
+  /**
+   * เส้น TP/SL ที่ active (เฉพาะ variant ที่มี) เก็บแบบ run-length
+   * ค่าคงที่ตลอดช่วงที่ถือโพซิชัน — ส่ง array เต็มความยาวจะเป็น null เกือบหมด
+   * (5,000 แท่ง = ~50KB ของคำว่า null) run-length เหลือไม่กี่ร้อยไบต์
+   */
+  tp: SmcLevelRun[] | null;
+  sl: SmcLevelRun[] | null;
+}
+
+export interface SmcSignalMark {
+  idx: number;
+  kind: "BUY" | "SELL";
+}
+
+export interface SmcDetail {
+  symbol: string;
+  interval: Interval;
+  variant: SmcVariantId;
+  bars: number;
+  /** แท่งเทียนทั้งหมด (offset = 0 เสมอ) */
+  candles: CandleWindow;
+  drawings: SmcDrawings;
+  signals: SmcSignalMark[];
+}
+
 export interface SmcScanRow {
   symbol: string;
   interval: Interval;
