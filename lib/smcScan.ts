@@ -20,8 +20,9 @@ import {
   BINANCE_WEIGHT_LIMIT_1M,
   klineWeight,
   smcVariant,
+  INTERVAL_MS,
   type FetchPlan,
-  type CandleWindow,
+  type SparkWindow,
   type QuickBacktest,
   type SmcScanRow,
   type SmcSignalDetail,
@@ -182,6 +183,21 @@ export async function fetchKlines(
   const now = Date.now();
   while (out.length && out[out.length - 1].closeTime > now) out.pop();
   return out;
+}
+
+/**
+ * เหรียญที่ถูกถอดออกจาก Binance แล้ว "ยังคืน klines ปกติ (HTTP 200)" แต่เป็นข้อมูลค้าง
+ * ที่หยุดไว้ตั้งแต่วันที่หยุดเทรด เช่น MATICUSDT ยังตอบ 200 แต่แท่งล่าสุดคือ ก.ย. 2024
+ *
+ * ถ้าไม่ดักไว้ ผลสแกนจะโชว์ว่า "มีสัญญาณเมื่อ 10 แท่งที่แล้ว" ทั้งที่เป็นข้อมูลเมื่อปีก่อน
+ * และเหรียญพวกนี้จะลอยขึ้นอันดับต้น ๆ เพราะ barsAgo น้อย
+ *
+ * คืน ms ที่ข้อมูลล้าหลัง — null = สดพอใช้งาน
+ */
+export function stalenessMs(klines: KlineData[], interval: Interval, maxIntervals = 3): number | null {
+  if (klines.length === 0) return null;
+  const lag = Date.now() - klines[klines.length - 1].closeTime;
+  return lag > INTERVAL_MS[interval] * maxIntervals ? lag : null;
 }
 
 // ═══ Normalized SMC output ═══════════════════════════════════════
@@ -467,26 +483,17 @@ export function analyzeSmc(
   const state: SmcScanRow["state"] =
     lastBuy < 0 && lastSell < 0 ? "NONE" : lastBuy > lastSell ? "BUY_ACTIVE" : "SELL_ACTIVE";
 
-  // หน้าต่างกราฟ — เลื่อนให้เห็นแท่งที่เกิดสัญญาณเสมอ
+  // เส้นราคาปิดสำหรับการ์ดในลิสต์ (OHLC เต็มอยู่ที่ /api/smc-scan/detail)
   const winSize = opts.candleWindow ?? 90;
-  let candles: CandleWindow | null = null;
-  const buyMarks: number[] = [];
-  const sellMarks: number[] = [];
+  let candles: SparkWindow | null = null;
   if (winSize > 0 && len > 0) {
-    const start = Math.max(0, Math.min(len - winSize, lastBuy >= 0 ? lastBuy - 20 : len - winSize));
+    const start = Math.max(0, len - winSize);
     const slice = klines.slice(start);
     candles = {
-      offset: start,
-      t: slice.map((k) => k.closeTime),
-      o: slice.map((k) => px(+k.open)),
-      h: slice.map((k) => px(+k.high)),
-      l: slice.map((k) => px(+k.low)),
+      t0: slice[0].closeTime,
+      t1: slice[slice.length - 1].closeTime,
       c: slice.map((k) => px(+k.close)),
     };
-    for (let i = start; i < len; i++) {
-      if (r.signal[i] === "BUY") buyMarks.push(i);
-      else if (r.signal[i] === "SELL") sellMarks.push(i);
-    }
   }
 
   const lastPrice = closes[len - 1];
@@ -504,8 +511,6 @@ export function analyzeSmc(
     changeSinceSellPct: sell ? round(((lastPrice - closes[lastSell]) / closes[lastSell]) * 100, 2) : null,
     backtest: opts.withBacktest === false ? null : quickBacktest(klines, r.signal, opts.feesPct ?? 0.1),
     candles,
-    buyMarks,
-    sellMarks,
     warning: len < cfg.minBars
       ? `มีแค่ ${len} แท่ง — ${cfg.shortName} ต้องการอย่างน้อย ~${cfg.minBars} แท่งจึงจะเชื่อถือได้`
       : undefined,

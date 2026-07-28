@@ -1,13 +1,15 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
-import { CRYPTO_CATEGORIES } from "@/components/cryptocurrency-category-ui";
+import { CRYPTO_CATEGORIES, type CryptoCategory } from "@/components/cryptocurrency-category-ui";
 import { cn } from "@/lib/utils";
 
 type Mode = "category" | "coin";
+
+type LiveSymbol = { symbol: string; base: string; quoteVolume: number; changePct: number };
 
 type Props = {
   /** คู่เหรียญที่เลือก เช่น "BTCUSDT" */
@@ -16,6 +18,34 @@ type Props = {
 };
 
 const pairOf = (symbol: string) => `${symbol}USDT`;
+
+/** หมวดที่สร้างจากรายชื่อสดของ Binance — ไม่ต้องดูแล list เอง */
+function buildLiveCategories(live: LiveSymbol[]): CryptoCategory[] {
+  if (live.length === 0) return [];
+  const byVol = live; // route เรียงตามวอลุ่มมาแล้ว
+  const mk = (id: string, emoji: string, name: string, description: string, list: LiveSymbol[]): CryptoCategory => ({
+    id, emoji, name, description,
+    url: "https://www.binance.com/en/markets/overview",
+    coins: list.map((s) => ({ name: s.base, symbol: s.base })),
+  });
+
+  const out: CryptoCategory[] = [];
+  for (const n of [50, 100, 200]) {
+    if (byVol.length > n) {
+      out.push(mk(
+        `live-top${n}`, "🔥", `วอลุ่มสูงสุด ${n}`,
+        `${n} คู่ USDT ที่มีมูลค่าซื้อขาย 24 ชม. สูงสุด — สภาพคล่องดี สัญญาณน่าเชื่อถือกว่า`,
+        byVol.slice(0, n),
+      ));
+    }
+  }
+  out.push(mk(
+    "live-all", "🌐", `ทั้งหมด ${byVol.length}`,
+    "ทุกคู่ USDT ที่เทรดได้บน Binance ตอนนี้ — เหรียญท้าย ๆ วอลุ่มบางมาก สัญญาณอาจไม่น่าเชื่อถือ",
+    byVol,
+  ));
+  return out;
+}
 
 /**
  * เลือกเหรียญ 2 โหมด:
@@ -27,18 +57,38 @@ export function CoinPicker({ selected, onChange }: Props) {
   const [mode, setMode] = useState<Mode>("category");
   const [viewCat, setViewCat] = useState(CRYPTO_CATEGORIES[0].id);
   const [search, setSearch] = useState("");
+  const [live, setLive] = useState<LiveSymbol[]>([]);
+  const [liveErr, setLiveErr] = useState<string | null>(null);
+
+  // ดึงรายชื่อคู่ USDT ที่เทรดได้จริงตอนนี้ (cache ฝั่ง server 5 นาที)
+  useEffect(() => {
+    const ctrl = new AbortController();
+    fetch("/api/binance/usdt-symbols", { signal: ctrl.signal })
+      .then(async (r) => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json() as Promise<{ symbols: LiveSymbol[] }>;
+      })
+      .then((d) => setLive(d.symbols ?? []))
+      .catch((e) => { if (!ctrl.signal.aborted) setLiveErr(e instanceof Error ? e.message : String(e)); });
+    return () => ctrl.abort();
+  }, []);
+
+  const categories = useMemo(
+    () => [...buildLiveCategories(live), ...CRYPTO_CATEGORIES],
+    [live],
+  );
 
   const catState = useMemo(() => {
     const m = new Map<string, { total: number; picked: number }>();
-    for (const cat of CRYPTO_CATEGORIES) {
+    for (const cat of categories) {
       const picked = cat.coins.filter((c) => selected.has(pairOf(c.symbol))).length;
       m.set(cat.id, { total: cat.coins.length, picked });
     }
     return m;
-  }, [selected]);
+  }, [selected, categories]);
 
   const toggleCategory = (id: string) => {
-    const cat = CRYPTO_CATEGORIES.find((c) => c.id === id);
+    const cat = categories.find((c) => c.id === id);
     if (!cat) return;
     const st = catState.get(id);
     const next = new Set(selected);
@@ -56,13 +106,13 @@ export function CoinPicker({ selected, onChange }: Props) {
     onChange(next);
   };
 
-  const active = CRYPTO_CATEGORIES.find((c) => c.id === viewCat) ?? CRYPTO_CATEGORIES[0];
-  const visibleCoins = search.trim()
-    ? active.coins.filter((c) =>
-        `${c.symbol} ${c.name}`.toLowerCase().includes(search.trim().toLowerCase()),
-      )
-    : active.coins;
-  const activeState = catState.get(active.id);
+  const active = categories.find((c) => c.id === viewCat) ?? categories[0];
+  const visibleCoins = !active
+    ? []
+    : search.trim()
+      ? active.coins.filter((c) => `${c.symbol} ${c.name}`.toLowerCase().includes(search.trim().toLowerCase()))
+      : active.coins;
+  const activeState = active ? catState.get(active.id) : undefined;
   const allPicked = !!activeState && activeState.picked === activeState.total;
 
   return (
@@ -84,42 +134,53 @@ export function CoinPicker({ selected, onChange }: Props) {
         ))}
       </div>
 
+      {liveErr && (
+        <p className="bg-amber-500/10 px-2 py-1.5 text-[10px] text-amber-600 dark:text-amber-400">
+          ดึงรายชื่อเหรียญสดจาก Binance ไม่ได้ ({liveErr}) — ใช้ได้เฉพาะหมวดที่คัดไว้ล่วงหน้า
+        </p>
+      )}
+
       {mode === "category" ? (
-        <div className="grid grid-cols-2 gap-1.5">
-          {CRYPTO_CATEGORIES.map((cat) => {
-            const st = catState.get(cat.id)!;
-            const full = st.picked === st.total;
-            const partial = st.picked > 0 && !full;
-            return (
-              <button
-                key={cat.id}
-                type="button"
-                onClick={() => toggleCategory(cat.id)}
-                className={cn(
-                  "flex min-h-11 items-center gap-1.5 px-2.5 py-2 text-left text-[11px] ring-1 transition-colors",
-                  full
-                    ? "bg-primary text-primary-foreground ring-primary"
-                    : partial
-                      ? "bg-primary/10 ring-primary/40"
-                      : "bg-background ring-foreground/12",
-                )}
-              >
-                <span className="text-sm leading-none">{cat.emoji}</span>
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate font-medium">{cat.name}</span>
-                  <span className={cn("block tabular-nums", full ? "opacity-80" : "text-muted-foreground")}>
-                    {st.picked}/{st.total}
+        <div className="max-h-88 space-y-1.5 overflow-y-auto overscroll-contain pr-0.5">
+          <div className="grid grid-cols-2 gap-1.5">
+            {categories.map((cat) => {
+              const st = catState.get(cat.id)!;
+              const full = st.picked === st.total;
+              const partial = st.picked > 0 && !full;
+              const isLive = cat.id.startsWith("live-");
+              return (
+                <button
+                  key={cat.id}
+                  type="button"
+                  onClick={() => toggleCategory(cat.id)}
+                  className={cn(
+                    "flex min-h-11 items-center gap-1.5 px-2.5 py-2 text-left text-[11px] ring-1 transition-colors",
+                    full
+                      ? "bg-primary text-primary-foreground ring-primary"
+                      : partial
+                        ? "bg-primary/10 ring-primary/40"
+                        : isLive
+                          ? "bg-sky-500/8 ring-sky-500/30"
+                          : "bg-background ring-foreground/12",
+                  )}
+                >
+                  <span className="text-sm leading-none">{cat.emoji}</span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate font-medium">{cat.name}</span>
+                    <span className={cn("block tabular-nums", full ? "opacity-80" : "text-muted-foreground")}>
+                      {st.picked}/{st.total}
+                    </span>
                   </span>
-                </span>
-              </button>
-            );
-          })}
+                </button>
+              );
+            })}
+          </div>
         </div>
       ) : (
         <div className="space-y-2">
           {/* แถบหมวดแบบเลื่อนแนวนอน */}
           <div className="-mx-3 flex gap-1.5 overflow-x-auto px-3 pb-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-            {CRYPTO_CATEGORIES.map((cat) => {
+            {categories.map((cat) => {
               const st = catState.get(cat.id)!;
               return (
                 <button
@@ -152,7 +213,7 @@ export function CoinPicker({ selected, onChange }: Props) {
             <Input
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder={`ค้นหาใน ${active.name}…`}
+              placeholder={`ค้นหาใน ${active?.name ?? ""}…`}
               className="h-8 text-xs"
               inputMode="search"
             />
@@ -160,37 +221,40 @@ export function CoinPicker({ selected, onChange }: Props) {
               variant={allPicked ? "secondary" : "outline"}
               size="sm"
               className="h-8 shrink-0"
-              onClick={() => toggleCategory(active.id)}
+              onClick={() => active && toggleCategory(active.id)}
             >
               {allPicked ? "ล้างหมวด" : "เลือกทั้งหมด"}
             </Button>
           </div>
 
-          <div className="grid grid-cols-3 gap-1.5 xs:grid-cols-4">
-            {visibleCoins.map((coin) => {
-              const on = selected.has(pairOf(coin.symbol));
-              return (
-                <button
-                  key={coin.symbol}
-                  type="button"
-                  onClick={() => toggleCoin(coin.symbol)}
-                  title={coin.name}
-                  className={cn(
-                    "flex h-10 items-center justify-center px-1 font-mono text-[11px] font-semibold ring-1 transition-colors",
-                    on
-                      ? "bg-primary text-primary-foreground ring-primary"
-                      : "bg-background text-foreground ring-foreground/12",
-                  )}
-                >
-                  {coin.symbol}
-                </button>
-              );
-            })}
-            {visibleCoins.length === 0 && (
-              <p className="col-span-full py-4 text-center text-[11px] text-muted-foreground italic">
-                ไม่พบเหรียญที่ตรงกับ “{search}”
-              </p>
-            )}
+          {/* หมวดสดมีได้ถึง ~470 เหรียญ — จำกัดความสูงแล้วให้เลื่อนแทนการดันหน้ายาว */}
+          <div className="max-h-72 overflow-y-auto overscroll-contain pr-0.5">
+            <div className="grid grid-cols-3 gap-1.5 xs:grid-cols-4">
+              {visibleCoins.map((coin) => {
+                const on = selected.has(pairOf(coin.symbol));
+                return (
+                  <button
+                    key={coin.symbol}
+                    type="button"
+                    onClick={() => toggleCoin(coin.symbol)}
+                    title={coin.name}
+                    className={cn(
+                      "flex h-10 items-center justify-center px-1 font-mono text-[11px] font-semibold ring-1 transition-colors",
+                      on
+                        ? "bg-primary text-primary-foreground ring-primary"
+                        : "bg-background text-foreground ring-foreground/12",
+                    )}
+                  >
+                    {coin.symbol}
+                  </button>
+                );
+              })}
+              {visibleCoins.length === 0 && (
+                <p className="col-span-full py-4 text-center text-[11px] text-muted-foreground italic">
+                  {search ? `ไม่พบเหรียญที่ตรงกับ “${search}”` : "ไม่มีเหรียญในหมวดนี้"}
+                </p>
+              )}
+            </div>
           </div>
         </div>
       )}

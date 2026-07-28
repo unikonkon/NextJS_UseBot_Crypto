@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { changeOf, isLatest, signalOf, smcVariant, type SignalSide, type SmcDetail, type SmcScanRow } from "@/lib/smcScanShared";
 import { cn } from "@/lib/utils";
-import { MiniChart } from "./mini-chart";
+import { Sparkline } from "./mini-chart";
 import {
   baseAsset, fmtBarsAgo, fmtPct, fmtPrice, fmtTime, pnlColor, TREND_LABEL, ZONE_LABEL,
 } from "./format";
@@ -118,14 +118,6 @@ export function DetailSheet({ row, rank, side, query, onClose }: Props) {
   const bt = row.backtest;
   const cfg = smcVariant(row.variant);
 
-  const levels = [
-    sig?.structureLevel != null
-      ? { price: sig.structureLevel, label: "โครงสร้าง", tone: "neutral" as const }
-      : null,
-    sig?.tp != null ? { price: sig.tp, label: "TP", tone: "buy" as const } : null,
-    sig?.sl != null ? { price: sig.sl, label: "SL", tone: "sell" as const } : null,
-  ].filter(Boolean) as { price: number; label: string; tone: "buy" | "sell" | "neutral" }[];
-
   return (
     <div className="fixed inset-0 z-50 flex flex-col justify-end">
       <button
@@ -185,14 +177,13 @@ export function DetailSheet({ row, rank, side, query, onClose }: Props) {
               <>
                 {/* ระหว่างรอ ใช้กราฟย่อจากผลสแกนไปก่อน เพื่อไม่ให้จอว่าง */}
                 {row.candles && (
-                  <MiniChart
-                    candles={row.candles}
-                    buyMarks={row.buyMarks}
-                    sellMarks={row.sellMarks}
-                    levels={levels}
-                    height={160}
-                    className="opacity-60 ring-1 ring-foreground/10"
-                  />
+                  <div className="h-40 opacity-60 ring-1 ring-foreground/10">
+                    <Sparkline
+                      className="h-full"
+                      closes={row.candles.c}
+                      up={(chg ?? 0) >= 0}
+                    />
+                  </div>
                 )}
                 {detailErr && (
                   <p className="mt-1 bg-destructive/10 px-2 py-1.5 text-[10px] text-destructive">
@@ -204,8 +195,8 @@ export function DetailSheet({ row, rank, side, query, onClose }: Props) {
 
             {row.candles && !detail && (
               <div className="mt-1 flex justify-between text-[9px] text-muted-foreground tabular-nums">
-                <span>{fmtTime(row.candles.t[0], row.interval)}</span>
-                <span>{fmtTime(row.candles.t[row.candles.t.length - 1], row.interval)}</span>
+                <span>{fmtTime(row.candles.t0, row.interval)}</span>
+                <span>{fmtTime(row.candles.t1, row.interval)}</span>
               </div>
             )}
           </section>

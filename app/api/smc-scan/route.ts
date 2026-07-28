@@ -11,6 +11,7 @@ import {
   analyzeSmc,
   estimateWeight,
   smcVariant,
+  stalenessMs,
   INTERVAL_MS,
   type ScanEvent,
   type SmcVariantId,
@@ -22,9 +23,14 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
 
-/** ดึงพร้อมกันกี่เหรียญ — สูงไปจะชน rate limit เร็ว ต่ำไปจะช้า */
-const CONCURRENCY = 4;
-const MAX_SYMBOLS = 120;
+/**
+ * ดึงพร้อมกันกี่เหรียญ — klines คิด weight 2/call คงที่ ดังนั้นสแกนครบ 470 คู่
+ * ใช้แค่ ~940 weight จากโควตา 6,000/นาที คอขวดจริงคือ latency ไม่ใช่โควตา
+ * จึงเร่ง concurrency ได้โดยไม่เสี่ยงโดนบล็อก
+ */
+const CONCURRENCY = 8;
+/** ครอบคลุมทุกคู่ USDT ที่เทรดได้ (ตอนเขียนนี้ 470 คู่) เผื่อ Binance เพิ่มเหรียญ */
+const MAX_SYMBOLS = 600;
 
 interface ScanBody {
   symbols?: string[];
@@ -104,6 +110,16 @@ export async function POST(request: NextRequest) {
               });
             });
             if (klines.length === 0) throw new Error("ไม่มีข้อมูลในช่วงที่เลือก");
+            // โหมด "ล่าสุด N แท่ง" เท่านั้นที่ต้องสด — โหมดระบุช่วงเวลาย้อนหลังไม่ต้องเช็ค
+            if (!plan.startTime) {
+              const lag = stalenessMs(klines, interval);
+              if (lag !== null) {
+                const days = Math.floor(lag / 86_400_000);
+                throw new Error(
+                  `ข้อมูลหยุดนิ่งมา ${days > 0 ? `${days} วัน` : `${Math.floor(lag / 3_600_000)} ชม.`} — เหรียญนี้น่าจะถูกถอดออกจาก Binance แล้ว`,
+                );
+              }
+            }
 
             const row = analyzeSmc(symbol, interval, klines, variantId, {
               params: body.params,

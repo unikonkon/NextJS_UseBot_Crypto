@@ -93,6 +93,13 @@ export default function SmcMobileScannerPage() {
     return Math.ceil(((plan.endTime ?? Date.now()) - plan.startTime) / INTERVAL_MS[interval]);
   }, [dataMode, numLimit, plan, interval]);
 
+  // วัดจริงได้ ~40 เหรียญ/วินาที ที่ concurrency 8 และ 500 แท่ง (470 เหรียญ ≈ 12 วินาที)
+  // ถ้าต้องดึงเกิน 1,000 แท่ง/เหรียญ จะแบ่งเป็นหลายหน้า เวลาจึงคูณตามจำนวนหน้า
+  const estSeconds = useMemo(() => {
+    const pages = Math.max(1, Math.ceil(estBars / 1000));
+    return Math.max(1, Math.round((selected.size / 40) * pages));
+  }, [selected.size, estBars]);
+
   // ─── สแกน: อ่าน NDJSON stream ทีละบรรทัด ───────────────────────
   const scan = useCallback(async () => {
     const symbols = Array.from(selected);
@@ -123,7 +130,9 @@ export default function SmcMobileScannerPage() {
           endTime: plan.endTime,
           variant,
           withBacktest: true,
-          candleWindow: 90,
+          // sparkline ในการ์ดไม่ต้องละเอียด — สแกนใหญ่ลดจำนวนแท่งลงเพื่อประหยัดเน็ตมือถือ
+          // (470 เหรียญ × 90 แท่ง ≈ 3MB, ลดเหลือ 40 แท่งได้ ~ครึ่งเดียว)
+          candleWindow: symbols.length > 250 ? 40 : symbols.length > 100 ? 60 : 90,
         }),
       });
       if (!res.ok || !res.body) {
@@ -439,6 +448,12 @@ export default function SmcMobileScannerPage() {
                   ~{estWeight.toLocaleString()} / {BINANCE_WEIGHT_LIMIT_1M.toLocaleString()} ต่อนาที
                 </span>
               </div>
+              {selected.size > 0 && (
+                <div className="flex items-center justify-between text-[10px] text-muted-foreground tabular-nums">
+                  <span>ประเมินเวลาที่ใช้สแกน</span>
+                  <span>~{estSeconds < 60 ? `${estSeconds} วินาที` : `${Math.ceil(estSeconds / 60)} นาที`}</span>
+                </div>
+              )}
               {estWeight > BINANCE_WEIGHT_LIMIT_1M * 0.85 && (
                 <p className="text-[10px] text-amber-600 dark:text-amber-400">
                   เกินโควตา 1 นาที — ระบบจะหยุดรออัตโนมัติจนกว่า Binance จะรีเซ็ตตัวนับ (สแกนจะช้าลงแต่ไม่ล้มเหลว)

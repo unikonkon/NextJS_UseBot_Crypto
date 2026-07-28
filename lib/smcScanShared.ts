@@ -170,6 +170,20 @@ export interface CandleWindow {
   c: number[];
 }
 
+/**
+ * ข้อมูลกราฟย่อสำหรับการ์ดในลิสต์ — ส่งเฉพาะราคาปิด
+ *
+ * เดิมส่ง OHLC ครบ (CandleWindow) ซึ่งกิน ~50% ของ payload ทั้งก้อน ทั้งที่
+ * การ์ดวาดแค่เส้นราคาปิด พอสแกน 470 เหรียญเลยกลายเป็น 3MB โดยไม่จำเป็น
+ * ส่วน OHLC เต็มยังมีอยู่ในหน้ารายละเอียดผ่าน /api/smc-scan/detail
+ */
+export interface SparkWindow {
+  /** ช่วงเวลาของแท่งแรก–แท่งสุดท้าย (พอสำหรับป้ายกำกับ) */
+  t0: number;
+  t1: number;
+  c: number[];
+}
+
 // ═══ Detail payload (กราฟเต็ม + เส้นที่ indicator ตี) ═══════════
 // โหลดตอนผู้ใช้แตะดูรายละเอียดเท่านั้น เพื่อไม่ให้ payload ของลิสต์บวม
 
@@ -251,10 +265,7 @@ export interface SmcScanRow {
   changeSinceBuyPct: number | null;
   changeSinceSellPct: number | null;
   backtest: QuickBacktest | null;
-  candles: CandleWindow | null;
-  /** index (เทียบ klines เต็ม) ของทุกสัญญาณในหน้าต่างกราฟ */
-  buyMarks: number[];
-  sellMarks: number[];
+  candles: SparkWindow | null;
   warning?: string;
 }
 
